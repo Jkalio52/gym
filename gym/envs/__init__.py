@@ -310,3 +310,29 @@ register(
     id='DoomDeathmatch-v0',
     entry_point='gym.envs.doom:DoomDeathmatchEnv',
 )
+
+# Attention
+
+register(
+    id='Attention224-v0',
+    entry_point='gym.envs.attention:AttentionEnv',
+    kwargs={
+        'glimpse_size': 224,
+    },
+)
+
+register(
+    id='Attention96-v0',
+    entry_point='gym.envs.attention:AttentionEnv',
+    kwargs={
+        'glimpse_size': 96,
+    },
+)
+
+register(
+    id='Attention64-v0',
+    entry_point='gym.envs.attention:AttentionEnv',
+    kwargs={
+        'glimpse_size': 64,
+    },
+)
