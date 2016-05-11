@@ -1,11 +1,13 @@
+from scipy.misc import imresize
+from skimage.io import imread
 from gym import spaces
 import gym
 import time
 import os
 import re
+import sys
 
 import numpy as np
-from scipy.misc import imread, imresize
 
 
 class AttentionEnv(gym.Env):
@@ -17,7 +19,10 @@ class AttentionEnv(gym.Env):
     def __init__(self, glimpse_size):
         num_categories = 1000
 
-        data_dir = '/Users/ryan/data/ILSVRC2012/ILSVRC2012_img_train_short'  # FIXME
+        data_dir = os.environ.get('IMAGENET_DIR')
+        if not data_dir:
+            print "Set IMAGENET_DIR env variable"
+            sys.exit(1)
 
         self.glimpse_size = glimpse_size
 
@@ -31,13 +36,12 @@ class AttentionEnv(gym.Env):
         self.num_steps = 0
         self.index = 0
         self.load_img()
-        self.last_action = [0.0, 0.0, 0.0]
+        self.last_action = [0, 0, [0.0, 0.0, 0.0]]
 
         attention_low = np.array([-1.0, -1.0, 0])
         attention_high = np.array([1.0, 1.0, 1.0])
 
-        attention_space = spaces.Box(attention_low, attention_high
-                                     )  # (y, x, zoom)
+        attention_space = spaces.Box(attention_low, attention_high)  # (y, x, zoom)
 
         self.action_space = spaces.Tuple([
             spaces.Discrete(2),  # continue = 0, quit = 1
@@ -51,9 +55,9 @@ class AttentionEnv(gym.Env):
     def translate_attention(self, img_shape):
         #quit = self.last_action[0]
         #classify = self.last_action[1]
-        y = self.last_action[2]  # [-1, 1]
-        x = self.last_action[3]  # [-1, 1]
-        zoom = self.last_action[4]  # [0, 1]
+        y = self.last_action[2][0]  # [-1, 1]
+        x = self.last_action[2][1]  # [-1, 1]
+        zoom = self.last_action[2][2]  # [0, 1]
 
         img_height = img_shape[0]
         img_width = img_shape[1]
@@ -109,9 +113,14 @@ class AttentionEnv(gym.Env):
         #print "crop shape", crop.shape
         #print padded_crop.shape
 
+        #print "mean padded_crop", np.mean(padded_crop)
+
         observation = imresize(padded_crop,
                                (self.glimpse_size, self.glimpse_size))
         assert observation.shape == (self.glimpse_size, self.glimpse_size, 3)
+
+        #print "mean observation", np.mean(observation)
+        observation = observation / 255.0
 
         return observation
 
@@ -191,8 +200,10 @@ class AttentionEnv(gym.Env):
 
         self.current = self.data[self.index]
         img_fn = self.current['filename']
-        #print "load image", img_fn
-        self.img = imread(img_fn) / 255.0
+
+        self.img = imread(img_fn)
+        self.img = self.img / 255.0
+
         if len(self.img.shape) == 2:
             self.img = np.dstack([self.img, self.img, self.img])
 
@@ -202,7 +213,7 @@ class AttentionEnv(gym.Env):
     def _reset(self):
         self.num_steps = 0
         self.index += 1
-        self.last_action = [0, 0, 0.0, 0.0, 0.0]
+        self.last_action = [0, 0, [0.0, 0.0, 0.0]]
         if self.index > 100000:
             raise NotImplementedError
 
@@ -235,9 +246,9 @@ class AttentionEnv(gym.Env):
 
         done = bool(action[0])
         label_guess = action[1]
-        y = action[2]
-        x = action[3]
-        zoom = action[4]
+        y = action[2][0]
+        x = action[2][1]
+        zoom = action[2][2]
 
         self.last_action = action
 
@@ -262,18 +273,18 @@ class AttentionEnv(gym.Env):
 
 
 def file_list(data_dir):
-    import subprocess
-    output = subprocess.check_output(["find", data_dir, "-name", "*.JPEG"])
-    return [s.strip() for s in output.splitlines()]
-    #dir_txt = data_dir + ".txt"
-    #filenames = []
-    #with open(dir_txt, 'r') as f:
-    #    for line in f:
-    #        if line[0] == '.': continue
-    #        line = line.rstrip()
-    #        fn = os.path.join(data_dir, line)
-    #        filenames.append(fn)
-    #return filenames
+    #import subprocess
+    #output = subprocess.check_output(["find", data_dir, "-name", "*.JPEG"])
+    #return [s.strip() for s in output.splitlines()]
+    dir_txt = data_dir + ".txt"
+    filenames = []
+    with open(dir_txt, 'r') as f:
+        for line in f:
+            if line[0] == '.': continue
+            line = line.rstrip()
+            fn = os.path.join(data_dir, line)
+            filenames.append(fn)
+    return filenames
 
 
 def load_data(data_dir):
