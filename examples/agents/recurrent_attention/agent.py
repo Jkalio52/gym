@@ -8,14 +8,15 @@ import numpy as np
 
 import resnet as resnet
 
-from tensorflow.models.rnn.rnn_cell import BasicLSTMCell
+from tensorflow.models.rnn.rnn_cell import GRUCell
 
+MOVING_AVERAGE_DECAY = 0.9
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('continue', False, 'resume from latest saved state')
-tf.app.flags.DEFINE_float('learning_rate', 0.1, 'Initial learning rate.')
+tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
-tf.app.flags.DEFINE_integer('glimpse_size', 96, '96 or 224')
+tf.app.flags.DEFINE_integer('glimpse_size', 64, '64 or 96 or 224')
 tf.app.flags.DEFINE_integer('hidden_size', 1024, '')
 tf.app.flags.DEFINE_integer('max_episode_steps', 10, '')
 tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
@@ -127,21 +128,20 @@ class Agent(object):
         # first axis of inputs is time. conflate with batch in cnn.
         # batch size is always 1 with this agent.
         x = self.inputs
-        x = resnet.inference(x,
-                             is_training=self.is_training,
-                             preprocess=True,
-                             num_blocks=[3, 4, 6, 3])
+        x = resnet.inference_small(x,
+                                   is_training=self.is_training,
+                                   num_blocks=3)
         # add batch dimension. output: batch=1, time, height, width, depth=3
         x = tf.expand_dims(x, 0)
         # END CNN
 
-        self.lstm = BasicLSTMCell(FLAGS.hidden_size)
-        outputs, states = tf.nn.dynamic_rnn(self.lstm, x, dtype='float')
+        self.cell = GRUCell(FLAGS.hidden_size)
+        outputs, states = tf.nn.dynamic_rnn(self.cell, x, dtype='float')
 
-        assert outputs.get_shape().as_list() == [1,  None, self.lstm.output_size]
+        assert outputs.get_shape().as_list() == [1,  None, self.cell.output_size]
         outputs = tf.squeeze(outputs, squeeze_dims=[0]) # remove first axis
 
-        assert states.get_shape().as_list() == [None, self.lstm.state_size]
+        assert states.get_shape().as_list() == [None, self.cell.state_size]
 
         quit_prob, quit_loss = self._build_action(outputs, 'quit', 2, self.quit_labels)
         classify_prob, classify_loss = self._build_action(outputs, 'classify', 1000, self.classify_labels)
@@ -163,8 +163,13 @@ class Agent(object):
 
         self.loss = tf.add_n(losses + regularization_losses, name='loss')
 
-        # TODO need to use tf.GraphKeys.REGULARIZATION_LOSS
         tf.scalar_summary('loss', self.loss)
+
+        # loss_avg
+        ema = tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY, self.global_step)
+        tf.add_to_collection(resnet.UPDATE_OPS_COLLECTION, ema.apply([self.loss]))
+        loss_avg = ema.average(self.loss)
+        tf.scalar_summary('loss_avg', loss_avg)
 
 
     def _build_action(self, x, name, num_possible_actions, labels):
