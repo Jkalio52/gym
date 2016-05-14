@@ -9,6 +9,11 @@ import sys
 
 import numpy as np
 
+num_categories = 10 # using the first 10 categories of imagenet for now.
+num_directional_actions = 4 # up, right, down, left
+num_zoom_actions = 2 # zoom in, zoom out
+num_actions = num_categories + num_directional_actions + num_zoom_actions
+
 
 class AttentionEnv(gym.Env):
     metadata = {
@@ -17,7 +22,6 @@ class AttentionEnv(gym.Env):
     }
 
     def __init__(self, glimpse_size):
-        num_categories = 1000
 
         data_dir = os.environ.get('IMAGENET_DIR')
         if not data_dir:
@@ -36,55 +40,79 @@ class AttentionEnv(gym.Env):
         self.num_steps = 0
         self.index = 0
         self.load_img()
-        self.last_action = [0, 0, [0.0, 0.0, 0.0]]
 
-        attention_low = np.array([-1.0, -1.0, 0])
-        attention_high = np.array([1.0, 1.0, 1.0])
+        # self.y and self.x represent pixel values inside self.img
+        # we start in the center.
+        self.y, self.x = self.img_center()
+        # 0 = zoomed out. 10 = zoomed in. 1-9 are intermediate zooms
+        # we start zoomed out
+        self.zoom = 0
 
-        attention_space = spaces.Box(attention_low, attention_high)  # (y, x, zoom)
 
-        self.action_space = spaces.Tuple([
-            spaces.Discrete(2),  # continue = 0, quit = 1
-            spaces.Discrete(num_categories),  # categorization
-            attention_space,
-        ])
-
+        print "num actions %d" % num_actions
+        self.action_space = spaces.Discrete(num_actions)
         self.observation_space = spaces.Box(-1.0, 1.0,
                                             (glimpse_size, glimpse_size, 3))
+    def img_center(self):
+        img_shape = self.img.shape
+        img_height = img_shape[0]
+        img_width = img_shape[1]
+        return (img_height / 2, img_width / 2)
 
     def translate_attention(self, img_shape):
-        #quit = self.last_action[0]
-        #classify = self.last_action[1]
-        y = self.last_action[2][0]  # [-1, 1]
-        x = self.last_action[2][1]  # [-1, 1]
-        zoom = self.last_action[2][2]  # [0, 1]
-
         img_height = img_shape[0]
         img_width = img_shape[1]
         longer_side = max(img_height, img_width)
 
-        center_y = int(y * (longer_side / 2.0) + (img_height / 2.0))
-        center_x = int(x * (longer_side / 2.0) + (img_width / 2.0))
+        half_attention_size = self.half_attention_size()
 
-        # if zoom == 1, attention_size = glimpse_size
-        # if zoom == 0, attention_size = longer_side
-        attention_size = zoom * self.glimpse_size + (1 - zoom) * longer_side
-        s = attention_size / 2.0
+        if img_height > img_width:
+            # y is the long side. x short side.
+            if self.y < half_attention_size:
+                self.y = half_attention_size
+            elif self.y > img_height - half_attention_size:
+                self.y = img_height - half_attention_size
+        else: 
+            # x is the long side. y short side.
+            if self.x < half_attention_size:
+                self.x = half_attention_size
+            elif self.x > img_width - half_attention_size:
+                self.x = img_width - half_attention_size
 
-        y_min = int(center_y - s)
-        y_max = int(center_y + s)
-        x_min = int(center_x - s)
-        x_max = int(center_x + s)
-        # these values might be negative (meaning the attention streches off the image)
-        # or might be larger than the size of the image.. again that the attention stretches off the image.
+        y_min = self.y - half_attention_size
+        y_max = self.y + half_attention_size
+        x_min = self.x - half_attention_size
+        x_max = self.x + half_attention_size
+
+        if img_height > img_width:
+            assert y_min >= 0
+            assert y_max <= img_height
+        else:
+            assert x_min >= 0
+            assert x_max <= img_width
+
+        assert x_max - x_min == 2 * half_attention_size
+        assert y_max - y_min == 2 * half_attention_size
+
         return y_min, y_max, x_min, x_max
+
+    def half_attention_size(self):
+        # 0 zoom is zoomed all the way out. so should be equal to longer side.
+        # 10 zoom is all the way in. should be longer_size / 10.
+        attention_size = ((10 - self.zoom) / 10.0) * longer_side)
+        assert isinstance(self.zoom, int)
+        if self.zoom == 0:
+            assert attention_size == longer_side
+        elif self.zoom == 10:
+            assert attention_size == longer_side / 10.0
+        else:
+            assert 1 <= self.zoom and self.zoom <= 9
+
+        return int(attention_size / 2.0)
 
     def make_observation(self):
         # Output is always glimpse_size x glimpse_size x 3
 
-        # If last_action is at the origin, then zoom 0.0 has the full image
-        # contained within the box from [-1, 1] in both height and width.
-        # So if we take the longer side of the image.
         img_shape = self.img.shape
         img_height = img_shape[0]
         img_width = img_shape[1]
@@ -108,19 +136,20 @@ class AttentionEnv(gym.Env):
 
         padded_crop = np.pad(crop, pad, 'constant', constant_values=0)
 
-        #print "img shape", img_shape
-        #print "pad", pad
-        #print "crop shape", crop.shape
-        #print padded_crop.shape
+        print "img shape", img_shape
+        print "pad", pad
+        print "crop shape", crop.shape
+        print padded_crop.shape
 
-        #print "mean padded_crop", np.mean(padded_crop)
+        print "mean padded_crop", np.mean(padded_crop)
 
         observation = imresize(padded_crop,
                                (self.glimpse_size, self.glimpse_size))
         assert observation.shape == (self.glimpse_size, self.glimpse_size, 3)
 
-        #print "mean observation", np.mean(observation)
+        print "mean observation before scale", np.mean(observation)
         observation = observation / 255.0
+        print "mean observation after scale", np.mean(observation)
 
         return observation
 
@@ -213,11 +242,12 @@ class AttentionEnv(gym.Env):
     def _reset(self):
         self.num_steps = 0
         self.index += 1
-        self.last_action = [0, 0, [0.0, 0.0, 0.0]]
         if self.index > 100000:
             raise NotImplementedError
 
         self.load_img()
+        self.y, self.x = self.img_center()
+        self.zoom = 0
 
         return self.make_observation()
 
@@ -244,27 +274,55 @@ class AttentionEnv(gym.Env):
         max_steps = 10
         self.num_steps += 1
 
-        done = bool(action[0])
-        label_guess = action[1]
-        y = action[2][0]
-        x = action[2][1]
-        zoom = action[2][2]
+        assert isinstance(action, int)
 
-        self.last_action = action
-
+        done = False
         reward = 0
+
+        if action < num_categories:
+            action_type = "category" 
+            category = action
+            done = True
+        elif action < num_categories + num_directional_actions:
+            action_type = "directional"
+            direction = action - num_categories
+            half_attention_size = self.half_attention_size()
+            if direction == 0:
+                # up
+                self.y = max(0, self.y - half_attention_size)
+            elif directional == 1:
+                # right
+                self.x = min(img_width, self.x + half_attention_size)
+            elif directional == 2:
+                # down
+                self.y = min(img_hieght, self.y + half_attention_size)
+            elif directional == 3:
+                # left
+                self.x = max(0, self.x - half_attention_size)
+            else:
+                assert False, 'unreachable'
+        else:
+            action_type = "zoom"
+            zoom = action - (num_categories + num_directional_actions)
+            assert zoom == 0 or zoom == 1
+            if zoom == 0:
+                # zoom in
+                self.zoom = max(10, self.zoom + 1)
+            elif zoom == 1:
+                # zoom out
+                self.zoom = min(0, self.zoom - 1)
+            else:
+                assert False, 'unreachable'
 
         if self.num_steps >= max_steps:
             done = True
 
-        if done:
-            #print "guess:", label_guess, synset[label_guess]
-            if label_guess == self.current["label_index"]:
+        if action_type == "category"
+            if category == self.current["label_index"]:
                 print "CORRECT"
-                reward += 1
+                reward = 1
             else:
-                #print "right answer:", self.current["label_index"], self.current["desc"]
-                pass
+                reward = -1
 
         observation = self.make_observation()
         info = self.current["label_index"]

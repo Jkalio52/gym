@@ -10,6 +10,11 @@ import resnet as resnet
 
 from tensorflow.models.rnn.rnn_cell import GRUCell
 
+num_categories = 10 # using the first 10 categories of imagenet for now.
+num_directional_actions = 4 # up, right, down, left
+num_zoom_actions = 2 # zoom in, zoom out
+num_actions = num_categories + num_directional_actions + num_zoom_actions
+
 MOVING_AVERAGE_DECAY = 0.9
 
 FLAGS = tf.app.flags.FLAGS
@@ -62,6 +67,7 @@ def sample(probs):
 
 class Agent(object):
     checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
+    dqn_epsilon = 0.1
 
     def __init__(self, sess):
         self.sess = sess
@@ -136,33 +142,27 @@ class Agent(object):
         # END CNN
 
         self.cell = GRUCell(FLAGS.hidden_size)
-        outputs, states = tf.nn.dynamic_rnn(self.cell, x, dtype='float')
-
-        assert outputs.get_shape().as_list() == [1,  None, self.cell.output_size]
-        outputs = tf.squeeze(outputs, squeeze_dims=[0]) # remove first axis
+        x, states = tf.nn.dynamic_rnn(self.cell, x, dtype='float')
 
         assert states.get_shape().as_list() == [None, self.cell.state_size]
+        assert x.get_shape().as_list() == [1,  None, self.cell.output_size]
+        x = tf.squeeze(x, squeeze_dims=[0]) # remove first axis
 
-        quit_prob, quit_loss = self._build_action(outputs, 'quit', 2, self.quit_labels)
-        classify_prob, classify_loss = self._build_action(outputs, 'classify', 1000, self.classify_labels)
-        y_prob, y_loss = self._build_action(outputs, 'y', 127, self.y_labels)
-        x_prob, x_loss = self._build_action(outputs, 'x', 127, self.x_labels)
-        zoom_prob, zoom_loss = self._build_action(outputs, 'zoom', 127, self.zoom_labels)
+        action_values = tf.contrib.layers.fully_connected(x, num_actions,
+            weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
+            name='action_values')
 
-        self.probs = [ quit_prob, classify_prob, y_prob, x_prob, zoom_prob ]
+        #last_index = tf.shape(action_values)[0]
+        #last_action_value = tf.slice(action_values, [last_index, 0], [-1, -1])
+        #last_action_value = action_values[last_index,:]
+        last_action_value = action_values[-1,:]
 
-        losses = [
-          tf.reduce_mean(self.reward * quit_loss),
-          tf.reduce_mean(classify_loss),
-          tf.reduce_mean(self.reward * y_loss),
-          tf.reduce_mean(self.reward * x_loss),
-          tf.reduce_mean(self.reward * zoom_loss),
-        ]
+        assert last_action_value.get_shape().as_list() == [1, num_actions]
+        self.max_value = tf.reduce_max(last_action_value, [1])
+        self.max_action = tf.argmax(last_action_value, 1)
 
         regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-
-        self.loss = tf.add_n(losses + regularization_losses, name='loss')
-
+        self.loss = tf.add_n(loss + regularization_losses, name='loss')
         tf.scalar_summary('loss', self.loss)
 
         # loss_avg
@@ -173,12 +173,6 @@ class Agent(object):
 
 
     def _build_action(self, x, name, num_possible_actions, labels):
-        logits = tf.contrib.layers.fully_connected(x, num_possible_actions,
-            weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004), name=name)
-
-        prob = tf.nn.softmax(logits)
-        # labels is shaped [time, num_possible_actions]
-        loss = tf.nn.softmax_cross_entropy_with_logits(logits, labels)
         return prob, loss
 
     @property
@@ -186,38 +180,29 @@ class Agent(object):
         return self.episodes[len(self.episodes)-1]
 
     def act(self, observation):
-        i = self.current_ep.step
-        assert i < FLAGS.max_episode_steps
-
         #print "observation mean", np.mean(observation)
         #print "observation shape", observation.shape
 
+        # With probability dqn_epsilon select a random action.
+        if random.random() < self.dqn_epsilon:
+            action = np.random.randint(0, num_actions)
+            return action
+
+        # Otherwise select an action that maximizes Q
+        i = self.current_ep.step
+        assert i < FLAGS.max_episode_steps
         self.observations[i, :] = observation
         obvs = self.observations[:i+1,:]
-        actions = self.sess.run(self.probs, {
+        action = self.sess.run(self.max_action, {
            self.inputs: obvs,
            self.is_training: False,
         })
 
-        batch_index = 0
-
-        quit = sample(actions[0][batch_index])
-        classify = sample(actions[1][batch_index])
-
-        y_int = sample(actions[2][batch_index])
-        y = 2 * (y_int / 127.0) - 1
-
-        x_int = sample(actions[3][batch_index])
-        x = 2 * (x_int / 127.0) - 1
-
-        zoom_int = sample(actions[4][batch_index])
-        zoom = zoom_int / 127.0
-
-        attention = np.asarray([y, x, zoom])
-        return (quit, classify, attention)
+        return action
 
 
     def store(self, observation, action, reward, done, correct_answer):
+        # From the DQN paper: "Store transition (phi_t, a_t, r_t, phi_{t+1})"
         self.current_ep.store(observation, action, reward)
 
         if done or self.current_ep.step >= FLAGS.max_episode_steps:
