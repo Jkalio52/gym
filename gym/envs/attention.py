@@ -9,7 +9,7 @@ import sys
 
 import numpy as np
 
-num_categories = 10 # using the first 10 categories of imagenet for now.
+num_categories = 1000
 num_directional_actions = 4 # up, right, down, left
 num_zoom_actions = 2 # zoom in, zoom out
 num_actions = num_categories + num_directional_actions + num_zoom_actions
@@ -64,7 +64,14 @@ class AttentionEnv(gym.Env):
         img_width = img_shape[1]
         longer_side = max(img_height, img_width)
 
-        half_attention_size = self.half_attention_size()
+        half_attention_size = self.half_attention_size(img_shape)
+
+        #print "img_height", img_height
+        #print "img_width", img_width
+
+        #print "self.y", self.y
+        #print "self.x", self.x
+        #print "half_attention_size", half_attention_size
 
         if img_height > img_width:
             # y is the long side. x short side.
@@ -84,6 +91,8 @@ class AttentionEnv(gym.Env):
         x_min = self.x - half_attention_size
         x_max = self.x + half_attention_size
 
+        #print (y_max, y_min, x_max, x_min)
+
         if img_height > img_width:
             assert y_min >= 0
             assert y_max <= img_height
@@ -96,17 +105,20 @@ class AttentionEnv(gym.Env):
 
         return y_min, y_max, x_min, x_max
 
-    def half_attention_size(self):
+    def half_attention_size(self, img_shape):
+        img_height = img_shape[0]
+        img_width = img_shape[1]
+        longer_side = max(img_height, img_width)
         # 0 zoom is zoomed all the way out. so should be equal to longer side.
         # 10 zoom is all the way in. should be longer_size / 10.
-        attention_size = ((10 - self.zoom) / 10.0) * longer_side)
+        attention_size = ((10 - self.zoom) / 10.0) * longer_side
         assert isinstance(self.zoom, int)
         if self.zoom == 0:
             assert attention_size == longer_side
         elif self.zoom == 10:
-            assert attention_size == longer_side / 10.0
+            assert np.isclose(attention_size, longer_side / 10.0)
         else:
-            assert 1 <= self.zoom and self.zoom <= 9
+            assert 1 <= self.zoom and self.zoom <= 9, "bad zoom value: %d" % self.zoom
 
         return int(attention_size / 2.0)
 
@@ -136,20 +148,20 @@ class AttentionEnv(gym.Env):
 
         padded_crop = np.pad(crop, pad, 'constant', constant_values=0)
 
-        print "img shape", img_shape
-        print "pad", pad
-        print "crop shape", crop.shape
-        print padded_crop.shape
+        #print "img shape", img_shape
+        #print "pad", pad
+        #print "crop shape", crop.shape
+        #print padded_crop.shape
 
-        print "mean padded_crop", np.mean(padded_crop)
+        #print "mean padded_crop", np.mean(padded_crop)
 
         observation = imresize(padded_crop,
                                (self.glimpse_size, self.glimpse_size))
         assert observation.shape == (self.glimpse_size, self.glimpse_size, 3)
 
-        print "mean observation before scale", np.mean(observation)
+        #print "mean observation before scale", np.mean(observation)
         observation = observation / 255.0
-        print "mean observation after scale", np.mean(observation)
+        #print "mean observation after scale", np.mean(observation)
 
         return observation
 
@@ -286,17 +298,19 @@ class AttentionEnv(gym.Env):
         elif action < num_categories + num_directional_actions:
             action_type = "directional"
             direction = action - num_categories
-            half_attention_size = self.half_attention_size()
+            half_attention_size = self.half_attention_size(self.img.shape)
             if direction == 0:
                 # up
                 self.y = max(0, self.y - half_attention_size)
-            elif directional == 1:
+            elif direction == 1:
                 # right
+                img_width = self.img.shape[1]
                 self.x = min(img_width, self.x + half_attention_size)
-            elif directional == 2:
+            elif direction == 2:
                 # down
-                self.y = min(img_hieght, self.y + half_attention_size)
-            elif directional == 3:
+                img_height = self.img.shape[2]
+                self.y = min(img_height, self.y + half_attention_size)
+            elif direction == 3:
                 # left
                 self.x = max(0, self.x - half_attention_size)
             else:
@@ -307,17 +321,17 @@ class AttentionEnv(gym.Env):
             assert zoom == 0 or zoom == 1
             if zoom == 0:
                 # zoom in
-                self.zoom = max(10, self.zoom + 1)
+                self.zoom = min(10, self.zoom + 1)
             elif zoom == 1:
                 # zoom out
-                self.zoom = min(0, self.zoom - 1)
+                self.zoom = max(0, self.zoom - 1)
             else:
                 assert False, 'unreachable'
 
         if self.num_steps >= max_steps:
             done = True
 
-        if action_type == "category"
+        if action_type == "category":
             if category == self.current["label_index"]:
                 print "CORRECT"
                 reward = 1

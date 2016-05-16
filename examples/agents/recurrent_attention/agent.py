@@ -5,17 +5,20 @@ import time
 import skimage.io # for some reason this needs to be loaded before tf
 import tensorflow as tf
 import numpy as np
+import random
 
 import resnet as resnet
 
 from tensorflow.models.rnn.rnn_cell import GRUCell
 
-num_categories = 10 # using the first 10 categories of imagenet for now.
+num_categories = 1000 # using the first 10 categories of imagenet for now.
 num_directional_actions = 4 # up, right, down, left
 num_zoom_actions = 2 # zoom in, zoom out
 num_actions = num_categories + num_directional_actions + num_zoom_actions
 
+DQN_GAMMA = 0.99
 MOVING_AVERAGE_DECAY = 0.9
+REPLAY_MEMEORY_SIZE = 1000000
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('continue', False, 'resume from latest saved state')
@@ -31,52 +34,42 @@ tf.app.flags.DEFINE_string('restore_resnet', '', 'path to resnet ckpt to restore
 
 
 class Episode:
-    observations = []
+    obvs = None # Set in done()
     actions = []
     rewards = []
     step = 0
-    total_reward = 0
+    _done = False
 
-    def store(self, observation, action, reward):
-        self.observations.append(observation)
+    @property
+    def num_frames(self):
+        assert self._done
+        return self.obvs.shape[0]
+
+    @property
+    def num_actions(self):
+        assert self._done
+        return self.step
+
+    def done(self, obvs):
+        self._done = True
+        self.obvs = obvs[0:self.step+1,:]
+
+    def store(self, action, reward):
         self.actions.append(action)
         self.rewards.append(reward)
-        self.total_reward += reward
         self.step += 1
-
-    def labels(self):
-        # This is horrible code. Please fix.
-        quit_labels = np.zeros((self.step, 2))
-        y_labels = np.zeros((self.step, 127))
-        x_labels = np.zeros((self.step, 127))
-        zoom_labels = np.zeros((self.step, 127))
-        for i in range(0, self.step):
-            a = self.actions[i]
-            quit = int(a[0])
-            y = int(a[2][0])
-            x = int(a[2][1])
-            zoom = int(a[2][2])
-            quit_labels[i, quit] = 1.0
-            y_labels[i, y] = 1.0
-            x_labels[i, x] = 1.0
-            zoom_labels[i, zoom] = 1.0
-        return quit_labels, y_labels, x_labels, zoom_labels
-
-def sample(probs):
-    return np.random.choice(len(probs), 1, p=probs)[0]
 
 class Agent(object):
     checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
     dqn_epsilon = 0.1
+    replay_memory = [] # Filled with Episode instances
 
     def __init__(self, sess):
         self.sess = sess
         self.global_step = tf.get_variable('global_step', [],
             initializer=tf.constant_initializer(0), trainable=False)
 
-        self.observations = np.zeros((10, FLAGS.glimpse_size, FLAGS.glimpse_size, 3))
-
-        self.episodes = [ Episode() ]
+        self.observations = None
 
         self._build()
         self._setup_train()
@@ -118,24 +111,17 @@ class Agent(object):
             print "done"
 
     def _build(self):
-        inputs_shape = [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3]
-        self.inputs = tf.placeholder('float', inputs_shape)
-
         self.is_training = tf.placeholder('bool', [], name='is_training')
-        self.reward = tf.placeholder('float', [], name='reward')
-        self.train_steps = tf.placeholder('int32', [], name='train_steps')
-        self.quit_labels = tf.placeholder('float', [None, 2], name='quit_labels')
-        self.classify_labels = tf.placeholder('float', [None, 1000], name='classify_labels')
-        self.y_labels = tf.placeholder('float', [None, 127], name='y_labels')
-        self.x_labels = tf.placeholder('float', [None, 127], name='x_labels')
-        self.zoom_labels = tf.placeholder('float', [None, 127], name='zoom_labels')
+        self.is_terminal = tf.placeholder('bool', [], name='is_terminal')
+        self.inputs = tf.placeholder('float', [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3], name='inputs')
+        self.last_reward = tf.placeholder('float', [], name='last_reward')
+        self.last_action = tf.placeholder('int32', [], name='last_action')
 
         # CNN
         # first axis of inputs is time. conflate with batch in cnn.
         # batch size is always 1 with this agent.
         x = self.inputs
-        x = resnet.inference_small(x,
-                                   is_training=self.is_training,
+        x = resnet.inference_small(x, is_training=self.is_training,
                                    num_blocks=3)
         # add batch dimension. output: batch=1, time, height, width, depth=3
         x = tf.expand_dims(x, 0)
@@ -152,17 +138,45 @@ class Agent(object):
             weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
             name='action_values')
 
-        #last_index = tf.shape(action_values)[0]
-        #last_action_value = tf.slice(action_values, [last_index, 0], [-1, -1])
-        #last_action_value = action_values[last_index,:]
-        last_action_value = action_values[-1,:]
+        print "action_values", action_values.get_shape()
 
-        assert last_action_value.get_shape().as_list() == [1, num_actions]
-        self.max_value = tf.reduce_max(last_action_value, [1])
-        self.max_action = tf.argmax(last_action_value, 1)
+        def action_value_slice(index):
+          y = tf.expand_dims(index, 0)
+          z = tf.zeros([1], dtype='int32')
+          begin = tf.concat(0, [y, z]) # WAY TOO HARD. FILE A BUG
+          #print 'begin shape', begin.get_shape()
+          s = tf.slice(action_values, begin, [1, num_actions])
+          return tf.squeeze(s)
+
+        input_size = tf.shape(self.inputs)[0]
+        last_values = action_value_slice(input_size - 1)
+
+        #last_action_value = action_values[last_index] # PREFERED WAY TO DO IT.
+
+        print "last_value.get_shape()", last_values.get_shape().as_list()
+        assert last_values.get_shape().as_list() == [num_actions]
+
+        last_max_value = tf.reduce_max(last_values)
+        self.last_maximizing_action = tf.argmax(last_values, 0)
+
+        second_last_values = action_value_slice(input_size - 2)
+        inferred_future_reward = tf.squeeze(
+            tf.slice(second_last_values,
+                     tf.expand_dims(self.last_action, 0),
+                     [1]))
+
+        def terminal():
+            return self.last_reward
+
+        def not_teriminal():
+            return self.last_reward + DQN_GAMMA * last_max_value
+
+        expected_future_reward = tf.cond(self.is_terminal, terminal, not_teriminal)
+
+        q_loss = tf.square(expected_future_reward - inferred_future_reward, name='q_loss')
 
         regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        self.loss = tf.add_n(loss + regularization_losses, name='loss')
+        self.loss = tf.add_n([q_loss] + regularization_losses, name='loss')
         tf.scalar_summary('loss', self.loss)
 
         # loss_avg
@@ -177,11 +191,12 @@ class Agent(object):
 
     @property
     def current_ep(self):
-        return self.episodes[len(self.episodes)-1]
+        return self.replay_memory[len(self.replay_memory)-1]
 
     def act(self, observation):
         #print "observation mean", np.mean(observation)
         #print "observation shape", observation.shape
+        assert observation.shape == (FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
 
         # With probability dqn_epsilon select a random action.
         if random.random() < self.dqn_epsilon:
@@ -193,50 +208,65 @@ class Agent(object):
         assert i < FLAGS.max_episode_steps
         self.observations[i, :] = observation
         obvs = self.observations[:i+1,:]
-        action = self.sess.run(self.max_action, {
-           self.inputs: obvs,
+        action = self.sess.run(self.last_maximizing_action, {
            self.is_training: False,
+           self.inputs: obvs,
         })
 
         return action
 
+    def reset(self, observation):
+        self.observations = np.zeros((FLAGS.max_episode_steps, FLAGS.glimpse_size, FLAGS.glimpse_size, 3))
+        self.observations[0,:] = observation
+
+        self.replay_memory.append(Episode())
+
+        # Memory limit on replay_memory
+        if len(self.replay_memory) > REPLAY_MEMEORY_SIZE:
+            self.replay_memory.pop(0)
 
     def store(self, observation, action, reward, done, correct_answer):
-        # From the DQN paper: "Store transition (phi_t, a_t, r_t, phi_{t+1})"
-        self.current_ep.store(observation, action, reward)
+        ep = self.current_ep
+        ep.store(action, reward)
+        self.observations[:ep.step, :] = observation
 
-        if done or self.current_ep.step >= FLAGS.max_episode_steps:
-            ep = self.episodes[-1]
+        if done or ep.step >= FLAGS.max_episode_steps:
+            ep.done(self.observations)
+            self.observations = None
+            print "episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames)
 
-            if done:
-                self._train(ep, correct_answer, len(self.episodes))
 
-            self.episodes.append(Episode())
+    def train(self):
+        step = self.sess.run(self.global_step)
+        write_summary = (step % 10 == 0 and step > 1)
+        # Sample random minibatch of transititons
+        if len(self.replay_memory) < 10: return # skip train
 
-    def _train(self, ep, correct_answer, step):
-        # one hot vector
-        classify_labels = np.zeros((ep.step, 1000))
-        classify_labels[:, correct_answer] = 1
+        random_index = np.random.randint(0, len(self.replay_memory) - 1)
+        random_episode = self.replay_memory[random_index]
 
-        quit_labels, y_labels, x_labels, zoom_labels = ep.labels()
-        feed_dict = {
-          self.is_training: True,
-          self.reward: ep.total_reward,
-          self.train_steps: ep.step,
-          self.inputs: self.observations[:ep.step,:],
-          self.quit_labels: quit_labels,
-          self.classify_labels: classify_labels,
-          self.y_labels: y_labels,
-          self.x_labels: x_labels,
-          self.zoom_labels: zoom_labels,
-        }
+        assert random_episode._done
+
+        random_frame = np.random.randint(1, random_episode.num_frames)
+
+        is_terminal = (random_frame == random_episode.num_frames - 1)
+        last_reward = random_episode.rewards[random_frame]
+        last_action = random_episode.actions[random_frame]
+
+        obvs = random_episode.obvs[0:random_frame+1]
 
         i = [self.train_op, self.loss]
-        write_summary = (step % 10 == 0)
+
         if write_summary:
             i.append(self.summary_op)
 
-        o = self.sess.run(i, feed_dict)
+        o = self.sess.run(i, {
+            self.is_training: True,
+            self.is_terminal: is_terminal,
+            self.inputs: obvs, 
+            self.last_reward: last_reward,
+            self.last_action: last_action,
+        })
 
         loss_value = o[1]
 
@@ -244,7 +274,7 @@ class Agent(object):
             summary_str = o[2]
             self.summary_writer.add_summary(summary_str, step)
 
-        print "Episode %d: %d steps, %f loss" % (step, ep.step, loss_value)
+        print "step %d: %f loss" % (step, loss_value)
 
         if step % 1000 == 0 and step > 0:
             print 'save checkpoint'
@@ -266,11 +296,14 @@ def main(_):
     for i_episode in xrange(1, FLAGS.num_episodes):
         observation = env.reset()
 
+        agent.reset(observation)
+
         for t in xrange(FLAGS.max_episode_steps):
             env.render()
             action = agent.act(observation)
             observation, reward, done, info = env.step(action)
             agent.store(observation, action, reward, done, info)
+            agent.train()
             if done: break
 
     #env.monitor.close()
