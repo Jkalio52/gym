@@ -11,7 +11,7 @@ import resnet as resnet
 
 from tensorflow.models.rnn.rnn_cell import GRUCell
 
-num_categories = 1000 # using the first 10 categories of imagenet for now.
+num_categories = 3 # using the first 10 categories of imagenet for now.
 num_directional_actions = 4 # up, right, down, left
 num_zoom_actions = 2 # zoom in, zoom out
 num_actions = num_categories + num_directional_actions + num_zoom_actions
@@ -52,7 +52,7 @@ class Episode:
 
     def done(self, obvs):
         self._done = True
-        self.obvs = obvs[0:self.step+1,:]
+        self.obvs = obvs[0:self.step,:]
 
     def store(self, action, reward):
         self.actions.append(action)
@@ -63,6 +63,7 @@ class Agent(object):
     checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
     dqn_epsilon = 0.1
     replay_memory = [] # Filled with Episode instances
+    current_ep = None # set in reset()
 
     def __init__(self, sess):
         self.sess = sess
@@ -106,7 +107,7 @@ class Agent(object):
             print "restoring resnet..."
             resnet_variables_to_restore = tf.get_collection(resnet.RESNET_VARIABLES)
             saver = tf.train.Saver(resnet_variables_to_restore)
-            # '/Users/ryan/src/tensorflow-resnet/ResNet-L50.ckpt'
+            # /Users/ryan/src/tensorflow-resnet/tensorflow-resnet-pretrained-20160509/ResNet-L50.ckpt
             saver.restore(self.sess, FLAGS.restore_resnet)
             print "done"
 
@@ -189,10 +190,6 @@ class Agent(object):
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
 
-    @property
-    def current_ep(self):
-        return self.replay_memory[len(self.replay_memory)-1]
-
     def act(self, observation):
         #print "observation mean", np.mean(observation)
         #print "observation shape", observation.shape
@@ -219,41 +216,52 @@ class Agent(object):
         self.observations = np.zeros((FLAGS.max_episode_steps, FLAGS.glimpse_size, FLAGS.glimpse_size, 3))
         self.observations[0,:] = observation
 
-        self.replay_memory.append(Episode())
+        self.current_ep = Episode()
 
-        # Memory limit on replay_memory
-        if len(self.replay_memory) > REPLAY_MEMEORY_SIZE:
-            self.replay_memory.pop(0)
 
     def store(self, observation, action, reward, done, correct_answer):
         ep = self.current_ep
         ep.store(action, reward)
-        self.observations[:ep.step, :] = observation
 
-        if done or ep.step >= FLAGS.max_episode_steps:
+        done = (done or ep.step >= FLAGS.max_episode_steps)
+
+        if not done:
+            self.observations[ep.step, :] = observation
+        else: 
             ep.done(self.observations)
             self.observations = None
             print "episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames)
+
+            self.replay_memory.append(ep)
+            self.current_ep = None
+
+            # Memory limit on replay_memory
+            if len(self.replay_memory) > REPLAY_MEMEORY_SIZE:
+                self.replay_memory.pop(0)
 
 
     def train(self):
         step = self.sess.run(self.global_step)
         write_summary = (step % 10 == 0 and step > 1)
         # Sample random minibatch of transititons
-        if len(self.replay_memory) < 10: return # skip train
 
-        random_index = np.random.randint(0, len(self.replay_memory) - 1)
+        if len(self.replay_memory) < 3: return
+
+        random_index = np.random.randint(0, len(self.replay_memory))
         random_episode = self.replay_memory[random_index]
 
         assert random_episode._done
 
-        random_frame = np.random.randint(1, random_episode.num_frames)
+        # random_frame is "j" in the dqn paper.
+        random_frame = np.random.randint(0, random_episode.num_frames)
 
-        is_terminal = (random_frame == random_episode.num_frames - 1)
-        last_reward = random_episode.rewards[random_frame]
-        last_action = random_episode.actions[random_frame]
+        is_terminal = (random_frame + 1 == random_episode.num_frames - 1)
+        last_reward = random_episode.rewards[random_frame + 1]
+        last_action = random_episode.actions[random_frame + 1]
 
-        obvs = random_episode.obvs[0:random_frame+1]
+        # We need phi_j and phi_j+1 . Starting at zero means backproping
+        # thru the entire episode
+        obvs = random_episode.obvs[0:random_frame+2]
 
         i = [self.train_op, self.loss]
 
