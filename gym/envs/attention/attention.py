@@ -15,6 +15,10 @@ num_directional_actions = 4 # up, right, down, left
 num_zoom_actions = 2 # zoom in, zoom out
 num_actions = num_categories + num_directional_actions + num_zoom_actions
 
+human_size = 400
+human_bottom_padding = 1
+red = [255.0, 0, 0]
+
 
 def float_to_pixel(img_shape, y1, y2, x1, x2):
     """
@@ -88,7 +92,6 @@ class AttentionEnv(gym.Env):
 
 
     def __init__(self, glimpse_size):
-
         data_dir = os.environ.get('IMAGENET_DIR')
         if not data_dir:
             print "Set IMAGENET_DIR env variable"
@@ -99,13 +102,11 @@ class AttentionEnv(gym.Env):
         self.data = load_data(data_dir)
         np.random.shuffle(self.data)
 
-        self.load_img()
-
-
         print "num actions %d" % num_actions
         self.action_space = spaces.Discrete(num_actions)
         self.observation_space = spaces.Box(-1.0, 1.0,
                                             (glimpse_size, glimpse_size, 3))
+
     def img_center(self):
         img_shape = self.img.shape
         img_height = img_shape[0]
@@ -125,6 +126,10 @@ class AttentionEnv(gym.Env):
 
         y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel(img_shape,
             y_min, y_max, x_min, x_max)
+
+        if y_min_px >= img_height or y_max_px <= 0 or \
+           x_min_px >= img_width  or x_max_px <= 0:
+            return np.zeros((self.glimpse_size, self.glimpse_size, 3)) 
 
         pad_top = max(0, -y_min_px)
         pad_bottom = max(0, y_max_px - img_height)
@@ -161,7 +166,6 @@ class AttentionEnv(gym.Env):
 
 
     def _human(self, glimpse):
-        human_size = 400
         # This will always return a 400 x 400 image
         # with the current image (self.img) shown in the middle
         # it will draw a red line around the attention box.
@@ -190,8 +194,7 @@ class AttentionEnv(gym.Env):
             new_shape = (human_size, new_shape_shorter)
 
         # add room at the bottom to display what we're padding to the network:
-        bottom_glimpse_padding = 1
-        pad[0][1] += 2 * bottom_glimpse_padding + self.glimpse_size
+        pad[0][1] += 2 * human_bottom_padding + self.glimpse_size
 
         resized = imresize(self.img, new_shape)
         human_img = np.pad(resized, pad, 'constant', constant_values=0)
@@ -199,21 +202,23 @@ class AttentionEnv(gym.Env):
         # now draw the attention box
         y_min, y_max, x_min, x_max = attention_bounds(self.y, self.x, self.zoom)
 
-        y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel(img_shape,
+        y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel((human_size, human_size),
             y_min, y_max, x_min, x_max)
 
-        red = [255.0, 0, 0]
+        y_max_px -= 1
+        x_max_px -= 1
+
 
         def in_bounds(px):
-            return px >= 0 and px <= human_size
+            return px >= 0 and px < human_size
 
         def bound(px):
             if px < 0:
-                print "too small", px
+                #print "too small", px
                 px = 0
-            if px > human_size:
-                print "too big", px
-                px = human_size
+            if px >= human_size:
+                #print "too big", px
+                px = human_size - 1
             return px
 
         # top
@@ -233,10 +238,10 @@ class AttentionEnv(gym.Env):
             human_img[bound(y_min_px):bound(y_max_px),x_max_px,:] = red
 
         # Now plce the glimpse at the bottom
-        glimpse_y_min = human_size + bottom_glimpse_padding
+        glimpse_y_min = human_size + human_bottom_padding
         glimpse_y_max = glimpse_y_min + self.glimpse_size
-        glimpse_x_min = bottom_glimpse_padding 
-        glimpse_x_max = bottom_glimpse_padding + self.glimpse_size
+        glimpse_x_min = human_bottom_padding 
+        glimpse_x_max = human_bottom_padding + self.glimpse_size
         #print "(glimpse_y_min, glimpse_y_max, glimpse_x_min, glimpse_x_max)", (glimpse_y_min, glimpse_y_max, glimpse_x_min, glimpse_x_max)
         human_img[glimpse_y_min:glimpse_y_max,\
                   glimpse_x_min:glimpse_x_max, :] = 255 * glimpse
@@ -264,6 +269,8 @@ class AttentionEnv(gym.Env):
 
         m = np.mean(self.img)
         assert 0.0 <= m and m <= 1.0
+
+        print "loaded", img_fn
 
     def _reset(self):
         self.num_steps = 0
@@ -301,8 +308,36 @@ class AttentionEnv(gym.Env):
                 self.viewer = rendering.SimpleImageViewer()
             human_img = self._human(glimpse)
             self.viewer.imshow(human_img)
-            time.sleep(10)
+            time.sleep(1)
 
+
+    def up(self):
+        half_attention_size = get_half_attention_size(self.zoom)
+        self.y = self.y - half_attention_size
+        print "up"
+
+    def down(self):
+        half_attention_size = get_half_attention_size(self.zoom)
+        self.y = self.y + half_attention_size
+        print "down"
+
+    def left(self):
+        half_attention_size = get_half_attention_size(self.zoom)
+        self.x = self.x - half_attention_size
+        print "left"
+
+    def right(self):
+        half_attention_size = get_half_attention_size(self.zoom)
+        self.x = self.x + half_attention_size
+        print "right"
+
+    def zoom_in(self):
+        self.zoom = min(9, self.zoom + 1)
+        print "zoom in"
+
+    def zoom_out(self):
+        self.zoom = max(0, self.zoom - 1)
+        print "zoom out"
 
     def _step(self, action):
         max_steps = 10
@@ -321,23 +356,14 @@ class AttentionEnv(gym.Env):
         elif action < num_categories + num_directional_actions:
             action_type = "directional"
             direction = action - num_categories
-            half_attention_size = get_half_attention_size(self.zoom)
             if direction == 0:
-                # up
-                self.y = self.y - half_attention_size
-                print "up"
+                self.up()
             elif direction == 1:
-                # right
-                self.x = self.x + half_attention_size
-                print "right"
+                self.right()
             elif direction == 2:
-                # down
-                self.y = self.y + half_attention_size
-                print "down"
+                self.down()
             elif direction == 3:
-                # left
-                self.x = self.x - half_attention_size
-                print "left"
+                self.left()
             else:
                 assert False, 'unreachable'
         else:
@@ -345,13 +371,9 @@ class AttentionEnv(gym.Env):
             zoom = action - (num_categories + num_directional_actions)
             assert zoom == 0 or zoom == 1
             if zoom == 0:
-                # zoom in
-                self.zoom = min(9, self.zoom + 1)
-                print "zoom in"
+                self.zoom_in()
             elif zoom == 1:
-                # zoom out
-                self.zoom = max(0, self.zoom - 1)
-                print "zoom out"
+                self.zoom_out()
             else:
                 assert False, 'unreachable'
 
