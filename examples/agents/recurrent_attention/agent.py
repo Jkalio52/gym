@@ -34,11 +34,12 @@ tf.app.flags.DEFINE_string('restore_resnet', '', 'path to resnet ckpt to restore
 
 
 class Episode:
-    obvs = None # Set in done()
-    actions = []
-    rewards = []
-    step = 0
-    _done = False
+    def __init__(self):
+        self.obvs = None # Set in done()
+        self.actions = []
+        self.rewards = []
+        self.step = 0
+        self._done = False
 
     @property
     def num_frames(self):
@@ -52,29 +53,28 @@ class Episode:
 
     def done(self, obvs):
         self._done = True
-        self.obvs = obvs[0:self.step,:]
+        self.obvs = obvs
 
     def store(self, action, reward):
+        assert not self._done
         self.actions.append(action)
         self.rewards.append(reward)
         self.step += 1
 
 class Agent(object):
     checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
-    dqn_epsilon = 0.1
-    replay_memory = [] # Filled with Episode instances
-    current_ep = None # set in reset()
 
     def __init__(self, sess):
-        self.sess = sess
-        self.global_step = tf.get_variable('global_step', [],
-            initializer=tf.constant_initializer(0), trainable=False)
-
+        self.replay_memory = [] # Filled with Episode instances
+        self.current_ep = None # set in reset()
         self.observations = None
 
+        self.sess = sess
+
+        self.global_step = tf.get_variable('global_step', [], dtype='int32',
+            initializer=tf.constant_initializer(0), trainable=False)
         self._build()
         self._setup_train()
-
 
     def _setup_train(self):
         batchnorm_updates = tf.get_collection(resnet.UPDATE_OPS_COLLECTION)
@@ -135,26 +135,31 @@ class Agent(object):
         assert x.get_shape().as_list() == [1,  None, self.cell.output_size]
         x = tf.squeeze(x, squeeze_dims=[0]) # remove first axis
 
-        action_values = tf.contrib.layers.fully_connected(x, num_actions,
+        q_values = tf.contrib.layers.fully_connected(x, num_actions,
             weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
-            name='action_values')
+            name='q_values')
 
-        print "action_values", action_values.get_shape()
+        #print "q_values", q_values.get_shape()
 
         def action_value_slice(index):
+          # First need to build the begin argument to tf.slice.
+          # It should be begin=[index, 0] but TF makes this
+          # WAY TOO HARD. TODO FILE A BUG
           y = tf.expand_dims(index, 0)
           z = tf.zeros([1], dtype='int32')
-          begin = tf.concat(0, [y, z]) # WAY TOO HARD. FILE A BUG
-          #print 'begin shape', begin.get_shape()
-          s = tf.slice(action_values, begin, [1, num_actions])
+          begin = tf.concat(0, [y, z])
+
+          s = tf.slice(q_values, begin, [1, num_actions])
           return tf.squeeze(s)
 
         input_size = tf.shape(self.inputs)[0]
         last_values = action_value_slice(input_size - 1)
 
-        #last_action_value = action_values[last_index] # PREFERED WAY TO DO IT.
+        # PREFERED WAY TO DO IT.
+        #last_index = input_size - 1
+        #last_action_value = q_values[last_index]
 
-        print "last_value.get_shape()", last_values.get_shape().as_list()
+        #print "last_value.get_shape()", last_values.get_shape().as_list()
         assert last_values.get_shape().as_list() == [num_actions]
 
         last_max_value = tf.reduce_max(last_values)
@@ -195,29 +200,30 @@ class Agent(object):
         #print "observation shape", observation.shape
         assert observation.shape == (FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
 
+        step = self.sess.run(self.global_step)
+
+        e = (-0.9 / 1000000) * step + 1.0
+        dqn_epsilon = max(e, 0.1)
+
+        #print step, "dqn_epsilon", dqn_epsilon
+
         # With probability dqn_epsilon select a random action.
-        if random.random() < self.dqn_epsilon:
+        if random.random() < dqn_epsilon:
             action = np.random.randint(0, num_actions)
             return action
 
         # Otherwise select an action that maximizes Q
-        i = self.current_ep.step
-        assert i < FLAGS.max_episode_steps
-        self.observations[i, :] = observation
-        obvs = self.observations[:i+1,:]
+        assert self.current_ep.step < FLAGS.max_episode_steps
         action = self.sess.run(self.last_maximizing_action, {
            self.is_training: False,
-           self.inputs: obvs,
+           self.inputs: self.observations,
         })
 
         return action
 
     def reset(self, observation):
-        self.observations = np.zeros((FLAGS.max_episode_steps, FLAGS.glimpse_size, FLAGS.glimpse_size, 3))
-        self.observations[0,:] = observation
-
+        self.observations = observation[np.newaxis,:]
         self.current_ep = Episode()
-
 
     def store(self, observation, action, reward, done, correct_answer):
         ep = self.current_ep
@@ -225,9 +231,9 @@ class Agent(object):
 
         done = (done or ep.step >= FLAGS.max_episode_steps)
 
-        if not done:
-            self.observations[ep.step, :] = observation
-        else: 
+        self.observations = np.concatenate((self.observations, observation[np.newaxis,:]))
+
+        if done:
             ep.done(self.observations)
             self.observations = None
             print "episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames)
@@ -245,23 +251,36 @@ class Agent(object):
         write_summary = (step % 10 == 0 and step > 1)
         # Sample random minibatch of transititons
 
-        if len(self.replay_memory) < 3: return
+        if len(self.replay_memory) < 1: return
 
         random_index = np.random.randint(0, len(self.replay_memory))
         random_episode = self.replay_memory[random_index]
 
         assert random_episode._done
 
-        # random_frame is "j" in the dqn paper.
-        random_frame = np.random.randint(0, random_episode.num_frames)
+        # random_frame is "j" in the dqn paper. so it can be anything but the last.
+        random_frame = np.random.randint(0, random_episode.num_frames - 1)
+
+        #print "num frames", random_episode.num_frames
+        #print "rewards", random_episode.rewards
+        #print "actions", random_episode.actions
+        #print "random_frame", random_frame
 
         is_terminal = (random_frame + 1 == random_episode.num_frames - 1)
-        last_reward = random_episode.rewards[random_frame + 1]
-        last_action = random_episode.actions[random_frame + 1]
+        last_reward = random_episode.rewards[random_frame]
+        last_action = random_episode.actions[random_frame]
+
+        #print "is_terminal", is_terminal
+        #print "last_reward", last_reward
+        #print "last_action", last_action
+
+        assert last_reward == 0 or is_terminal
 
         # We need phi_j and phi_j+1 . Starting at zero means backproping
         # thru the entire episode
         obvs = random_episode.obvs[0:random_frame+2]
+
+        #print "obvs.shape", obvs.shape
 
         i = [self.train_op, self.loss]
 
@@ -284,7 +303,7 @@ class Agent(object):
 
         print "step %d: %f loss" % (step, loss_value)
 
-        if step % 1000 == 0 and step > 0:
+        if step % 100 == 0 and step > 0:
             print 'save checkpoint'
             self.saver.save(self.sess, self.checkpoint_path, global_step=self.global_step)
 
@@ -310,11 +329,14 @@ def main(_):
             env.render()
             action = agent.act(observation)
             observation, reward, done, info = env.step(action)
+            #print "action, reward, done", (action, reward, done)
             agent.store(observation, action, reward, done, info)
             agent.train()
             if done: break
 
     #env.monitor.close()
+    
+
 
 if __name__ == '__main__':
     tf.app.run()

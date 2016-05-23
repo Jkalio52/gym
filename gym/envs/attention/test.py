@@ -28,7 +28,6 @@ assert glimpse.shape == (64, 64, 3)
 assert (0.0 <= glimpse).all() and (glimpse <= 1.0).all()
 assert not np.allclose(glimpse, np.zeros(glimpse.shape)), "Not all zero"
 
-
 # if we move up twice, everything should be zero
 attention_env.up()
 attention_env.up()

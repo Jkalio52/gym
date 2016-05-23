@@ -81,17 +81,16 @@ class AttentionEnv(gym.Env):
         #"video.frames_per_second" : 2,
     }
 
-    epochs_complete = 0 
-    viewer = None
-    num_steps = 0
-    index = 0
-    # following are set by reset()
-    y = None
-    x = None
-    zoom = None
-
-
     def __init__(self, glimpse_size):
+        self.epochs_complete = 0 
+        self.viewer = None
+        self.num_steps = 0
+        self.index = 0
+        # following are set by reset()
+        self.y = None
+        self.x = None
+        self.zoom = None
+
         data_dir = os.environ.get('IMAGENET_DIR')
         if not data_dir:
             print "Set IMAGENET_DIR env variable"
@@ -270,7 +269,7 @@ class AttentionEnv(gym.Env):
         m = np.mean(self.img)
         assert 0.0 <= m and m <= 1.0
 
-        print "loaded", img_fn
+        #print "loaded", img_fn
 
     def _reset(self):
         self.num_steps = 0
@@ -308,8 +307,6 @@ class AttentionEnv(gym.Env):
                 self.viewer = rendering.SimpleImageViewer()
             human_img = self._human(glimpse)
             self.viewer.imshow(human_img)
-            time.sleep(1)
-
 
     def up(self):
         half_attention_size = get_half_attention_size(self.zoom)
