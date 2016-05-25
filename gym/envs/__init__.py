@@ -322,17 +322,17 @@ register(
 )
 
 register(
-    id='Attention96-v0',
-    entry_point='gym.envs.attention:AttentionEnv',
-    kwargs={
-        'glimpse_size': 96,
-    },
-)
-
-register(
     id='Attention64-v0',
     entry_point='gym.envs.attention:AttentionEnv',
     kwargs={
         'glimpse_size': 64,
+    },
+)
+
+register(
+    id='Attention32-v0',
+    entry_point='gym.envs.attention:AttentionEnv',
+    kwargs={
+        'glimpse_size': 32,
     },
 )

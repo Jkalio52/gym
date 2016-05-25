@@ -26,7 +26,7 @@ FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
 tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
-tf.app.flags.DEFINE_integer('glimpse_size', 64, '64 or 96 or 224')
+tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
 tf.app.flags.DEFINE_integer('hidden_size', 1024, '')
 tf.app.flags.DEFINE_integer('max_episode_steps', 10, '')
 tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
@@ -83,6 +83,9 @@ class Agent(object):
 
         self.global_step = tf.get_variable('global_step', [], dtype='int32',
             initializer=tf.constant_initializer(0), trainable=False)
+        self.val_step = tf.get_variable('val_step', [], dtype='int32',
+            initializer=tf.constant_initializer(0), trainable=False)
+
         self._build()
         self._setup_train()
 
@@ -94,6 +97,7 @@ class Agent(object):
             response = raw_input().lower()
             if response == "" or response == "y" or response == "yes":
                 import shutil
+                print "rm -rf %s" % FLAGS.train_dir
                 shutil.rmtree(FLAGS.train_dir)
 
     def _setup_train(self):
@@ -146,7 +150,7 @@ class Agent(object):
         # batch size is always 1 with this agent.
         x = self.inputs
         x = resnet.inference_small(x, is_training=self.is_training,
-                                   num_blocks=3)
+                                   num_blocks=1)
         # add batch dimension. output: batch=1, time, height, width, depth=3
         x = tf.expand_dims(x, 0)
         # END CNN
@@ -215,16 +219,18 @@ class Agent(object):
         tf.scalar_summary('loss_avg', loss_avg)
 
         # validation error avg
-        ema = tf.train.ExponentialMovingAverage(0.9)
-        self.val_error = tf.get_variable('val_error', [], dtype='float',
-            initializer=tf.constant_initializer(1.0), trainable=False)
-        self.val_error_apply = ema.apply([self.val_error])
-        val_error_avg = ema.average(self.val_error)
-        tf.scalar_summary('val_error_avg', val_error_avg)
+        ema = tf.train.ExponentialMovingAverage(0.9, self.val_step)
+        self.val_accuracy = tf.get_variable('val_accuracy', [], dtype='float',
+            initializer=tf.constant_initializer(0.0), trainable=False)
+        self.val_accuracy_apply = tf.group(
+            self.val_step.assign_add(1),
+            ema.apply([self.val_accuracy]))
+        val_accuracy_avg = ema.average(self.val_accuracy)
+        tf.scalar_summary('val_accuracy_avg', val_accuracy_avg)
 
 
-    def update_val_error(self, error_rate):
-        self.sess.run(self.val_error_apply, { self.val_error: error_rate })
+    def update_val_accuracy(self, accuracy):
+        self.sess.run(self.val_accuracy_apply, { self.val_accuracy: accuracy })
 
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
@@ -234,7 +240,11 @@ class Agent(object):
         #print "observation shape", observation.shape
         assert observation.shape == (FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
 
-        if train == False:
+        # If we are training, we randomly choose an action with probability
+        # dqn_epsilon. dqn_epsilon starts at 1.0 and decays to 0.1 over
+        # 1,000,000 steps. So at the beginning we only make random actions
+        # while towards the end we determine the action 90% of the time.
+        if train:
             step = self.sess.run(self.global_step)
             e = (-0.9 / 1000000) * step + 1.0
             dqn_epsilon = max(e, 0.1)
@@ -376,7 +386,7 @@ def validation(agent, env_val):
         observation = env_val.reset()
         agent.reset(observation)
         for t in xrange(FLAGS.max_episode_steps):
-            env_val.render(mode='rgb_array')
+            env_val.render(mode='human')
             action = agent.act(observation, train=False)
             observation, reward, done, info = env_val.step(action)
             if reward > 0:
@@ -384,9 +394,9 @@ def validation(agent, env_val):
                 correct += 1
             if done: break
 
-    error_rate = float(total - correct) / total
-    agent.update_val_error(error_rate)
-    print "VALIDATION ERROR %.2f" % error_rate
+    accuracy = float(correct) / total
+    agent.update_val_accuracy(accuracy)
+    print "validation accuracy %.2f" % accuracy
 
 
 if __name__ == '__main__':
