@@ -35,6 +35,10 @@ tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
 tf.app.flags.DEFINE_string('restore_resnet', '', 'path to resnet ckpt to restore from')
 
 
+DEBUG = False
+
+def log(msg):
+    if DEBUG: print msg
 
 class Episode:
     def __init__(self):
@@ -210,26 +214,37 @@ class Agent(object):
         loss_avg = ema.average(self.loss)
         tf.scalar_summary('loss_avg', loss_avg)
 
+        # validation error avg
+        ema = tf.train.ExponentialMovingAverage(0.9)
+        self.val_error = tf.get_variable('val_error', [], dtype='float',
+            initializer=tf.constant_initializer(1.0), trainable=False)
+        self.val_error_apply = ema.apply([self.val_error])
+        val_error_avg = ema.average(self.val_error)
+        tf.scalar_summary('val_error_avg', val_error_avg)
+
+
+    def update_val_error(self, error_rate):
+        self.sess.run(self.val_error_apply, { self.val_error: error_rate })
 
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
 
-    def act(self, observation):
+    def act(self, observation, train=True):
         #print "observation mean", np.mean(observation)
         #print "observation shape", observation.shape
         assert observation.shape == (FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
 
-        step = self.sess.run(self.global_step)
+        if train == False:
+            step = self.sess.run(self.global_step)
+            e = (-0.9 / 1000000) * step + 1.0
+            dqn_epsilon = max(e, 0.1)
 
-        e = (-0.9 / 1000000) * step + 1.0
-        dqn_epsilon = max(e, 0.1)
+            #print step, "dqn_epsilon", dqn_epsilon
 
-        #print step, "dqn_epsilon", dqn_epsilon
-
-        # With probability dqn_epsilon select a random action.
-        if random.random() < dqn_epsilon:
-            action = np.random.randint(0, num_actions)
-            return action
+            # With probability dqn_epsilon select a random action.
+            if random.random() < dqn_epsilon:
+                action = np.random.randint(0, num_actions)
+                return action
 
         # Otherwise select an action that maximizes Q
         assert self.current_ep.step < FLAGS.max_episode_steps
@@ -255,12 +270,10 @@ class Agent(object):
         if done:
             ep.done(self.observations)
             self.observations = None
-            print "episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames)
+            log("episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames))
 
             self.replay_memory.store(ep)
             self.current_ep = None
-
-
 
     def train(self):
         step = self.sess.run(self.global_step)
@@ -323,7 +336,11 @@ class Agent(object):
             self.saver.save(self.sess, self.checkpoint_path, global_step=self.global_step)
 
 def main(_):
+    os.environ["IMAGENET_DIR"] = "/Users/ryan/data/imagenet-small/imagenet-small-train"
     env = gym.make('Attention%d-v0' % FLAGS.glimpse_size)
+
+    os.environ["IMAGENET_DIR"] = "/Users/ryan/data/imagenet-small/imagenet-small-val"
+    env_val = gym.make('Attention%d-v0' % FLAGS.glimpse_size)
 
     #env.monitor.start('/tmp/attention', force=True)
 
@@ -347,8 +364,29 @@ def main(_):
             agent.train()
             if done: break
 
+        if i_episode % 10 == 0:
+            validation(agent, env_val)
+       
     #env.monitor.close()
     
+def validation(agent, env_val):
+    correct = 0
+    total = 10
+    for _ in xrange(0, total):
+        observation = env_val.reset()
+        agent.reset(observation)
+        for t in xrange(FLAGS.max_episode_steps):
+            env_val.render(mode='rgb_array')
+            action = agent.act(observation, train=False)
+            observation, reward, done, info = env_val.step(action)
+            if reward > 0:
+                assert done
+                correct += 1
+            if done: break
+
+    error_rate = float(total - correct) / total
+    agent.update_val_error(error_rate)
+    print "VALIDATION ERROR %.2f" % error_rate
 
 
 if __name__ == '__main__':

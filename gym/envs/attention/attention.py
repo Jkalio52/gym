@@ -19,6 +19,11 @@ human_size = 400
 human_bottom_padding = 1
 red = [255.0, 0, 0]
 
+DEBUG = False
+
+def log(msg):
+    if DEBUG: print msg
+
 
 def float_to_pixel(img_shape, y1, y2, x1, x2):
     """
@@ -311,30 +316,30 @@ class AttentionEnv(gym.Env):
     def up(self):
         half_attention_size = get_half_attention_size(self.zoom)
         self.y = self.y - half_attention_size
-        print "up"
+        log("up")
 
     def down(self):
         half_attention_size = get_half_attention_size(self.zoom)
         self.y = self.y + half_attention_size
-        print "down"
+        log("down")
 
     def left(self):
         half_attention_size = get_half_attention_size(self.zoom)
         self.x = self.x - half_attention_size
-        print "left"
+        log("left")
 
     def right(self):
         half_attention_size = get_half_attention_size(self.zoom)
         self.x = self.x + half_attention_size
-        print "right"
+        log("right")
 
     def zoom_in(self):
         self.zoom = min(9, self.zoom + 1)
-        print "zoom in"
+        log("zoom in")
 
     def zoom_out(self):
         self.zoom = max(0, self.zoom - 1)
-        print "zoom out"
+        log("zoom out")
 
     def _step(self, action):
         max_steps = 10
@@ -349,7 +354,7 @@ class AttentionEnv(gym.Env):
             action_type = "category" 
             category = action
             done = True
-            print "category %d" % category
+            log("category %d" % category)
         elif action < num_categories + num_directional_actions:
             action_type = "directional"
             direction = action - num_categories
@@ -379,7 +384,7 @@ class AttentionEnv(gym.Env):
 
         if action_type == "category":
             if category == self.current["label_index"]:
-                print "CORRECT"
+                log("CORRECT")
                 reward = 1
             else:
                 reward = -1
@@ -391,17 +396,8 @@ class AttentionEnv(gym.Env):
 
 
 def file_list(data_dir):
-    #import subprocess
-    #output = subprocess.check_output(["find", data_dir, "-name", "*.JPEG"])
-    #return [s.strip() for s in output.splitlines()]
-    dir_txt = data_dir + ".txt"
-    filenames = []
-    with open(dir_txt, 'r') as f:
-        for line in f:
-            if line[0] == '.': continue
-            line = line.rstrip()
-            fn = os.path.join(data_dir, line)
-            filenames.append(fn)
+    cmd = 'cd %s && find . | grep JPEG' % data_dir
+    filenames = os.popen(cmd).read().splitlines()
     return filenames
 
 
@@ -416,8 +412,7 @@ def load_data(data_dir):
     print "took %f sec" % duration
 
     for img_fn in files:
-        ext = os.path.splitext(img_fn)[1]
-        if ext != '.JPEG': continue
+        assert '.JPEG' == os.path.splitext(img_fn)[1]
 
         label_name = re.search(r'(n\d+)', img_fn).group(1)
         fn = os.path.join(data_dir, img_fn)
