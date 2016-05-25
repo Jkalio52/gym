@@ -1,5 +1,6 @@
 import sys
 import os
+import errno
 import gym
 import time
 import skimage.io # for some reason this needs to be loaded before tf
@@ -8,6 +9,7 @@ import numpy as np
 import random
 
 import resnet as resnet
+from replay_memory import ReplayMemory 
 
 from tensorflow.models.rnn.rnn_cell import GRUCell
 
@@ -21,7 +23,7 @@ MOVING_AVERAGE_DECAY = 0.9
 REPLAY_MEMEORY_SIZE = 1000000
 
 FLAGS = tf.app.flags.FLAGS
-tf.app.flags.DEFINE_boolean('continue', False, 'resume from latest saved state')
+tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
 tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 64, '64 or 96 or 224')
@@ -31,6 +33,7 @@ tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
                            """Directory where to write event logs """
                            """and checkpoint.""")
 tf.app.flags.DEFINE_string('restore_resnet', '', 'path to resnet ckpt to restore from')
+
 
 
 class Episode:
@@ -63,9 +66,12 @@ class Episode:
 
 class Agent(object):
     checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
+    replay_memory_path = os.path.join(FLAGS.train_dir, 'replay_memory')
 
     def __init__(self, sess):
-        self.replay_memory = [] # Filled with Episode instances
+        self._maybe_delete()
+
+        self.replay_memory = ReplayMemory(self.replay_memory_path)
         self.current_ep = None # set in reset()
         self.observations = None
 
@@ -75,6 +81,16 @@ class Agent(object):
             initializer=tf.constant_initializer(0), trainable=False)
         self._build()
         self._setup_train()
+
+    def _maybe_delete(self):
+        # If we aren't resuming and the train dir exists prompt to delete 
+        if not FLAGS.resume and os.path.isdir(FLAGS.train_dir):
+            print "Starting a new training session but %s exists" % FLAGS.train_dir
+            sys.stdout.write("Do you want to delete all the files and recreate it [y] ")
+            response = raw_input().lower()
+            if response == "" or response == "y" or response == "yes":
+                import shutil
+                shutil.rmtree(FLAGS.train_dir)
 
     def _setup_train(self):
         batchnorm_updates = tf.get_collection(resnet.UPDATE_OPS_COLLECTION)
@@ -95,12 +111,15 @@ class Agent(object):
 
         self.saver = tf.train.Saver(tf.all_variables())
 
-        if FLAGS.__getattr__('continue'):
+        self.sess.run(tf.initialize_all_variables())
+
+        if FLAGS.resume:
             latest = tf.train.latest_checkpoint(FLAGS.train_dir)
             if not latest:
-                print "No checkpoint to continue from in", FLAGS.train_dir
+                print "No checkpoint to resume from in", FLAGS.train_dir
                 sys.exit(1)
-            print "continue", latest
+            print "resume", latest
+            print "replay memory size:", self.replay_memory.count()
             self.saver.restore(self.sess, latest)
 
         if len(FLAGS.restore_resnet) > 0:
@@ -238,12 +257,9 @@ class Agent(object):
             self.observations = None
             print "episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames)
 
-            self.replay_memory.append(ep)
+            self.replay_memory.store(ep)
             self.current_ep = None
 
-            # Memory limit on replay_memory
-            if len(self.replay_memory) > REPLAY_MEMEORY_SIZE:
-                self.replay_memory.pop(0)
 
 
     def train(self):
@@ -251,10 +267,9 @@ class Agent(object):
         write_summary = (step % 10 == 0 and step > 1)
         # Sample random minibatch of transititons
 
-        if len(self.replay_memory) < 1: return
+        if self.replay_memory.count() < 1: return
 
-        random_index = np.random.randint(0, len(self.replay_memory))
-        random_episode = self.replay_memory[random_index]
+        random_episode = self.replay_memory.sample()
 
         assert random_episode._done
 
@@ -317,8 +332,6 @@ def main(_):
                       log_device_placement=False))
 
     agent = Agent(sess)
-
-    sess.run(tf.initialize_all_variables())
 
     for i_episode in xrange(1, FLAGS.num_episodes):
         observation = env.reset()
