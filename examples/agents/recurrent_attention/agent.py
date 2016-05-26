@@ -358,8 +358,6 @@ class Agent(object):
         #print "reward", reward
         #print "action", action
 
-        assert reward == 0 or is_terminal
-
         # phi_j and phi_j+1 
         obvs = random_episode.obvs[random_frame:random_frame+2]
 
@@ -439,6 +437,7 @@ def validation(agent, env_val):
         observation = env_val.reset()
         agent.reset(observation, env_val.backdoor_observation_params())
         debug_str = ''
+        total_reward = 0.0
         for t in xrange(FLAGS.max_episode_steps):
             env_val.render(mode='rgb_array')
             action = agent.act(observation, is_training=False)
@@ -453,11 +452,15 @@ def validation(agent, env_val):
                 reward=reward,
                 done=done,
                 is_training=False)
-            if reward > 0:
-                assert done
-                correct += 1
-                debug_str += "GOOD"
+            total_reward += reward
+            if reward != 0:
+                debug_str += "%.1f " % reward
             if done: break
+
+        if reward > 0:
+            correct += 1
+
+        debug_str += " = %.1f " % total_reward
         print debug_str
 
     accuracy = float(correct) / total

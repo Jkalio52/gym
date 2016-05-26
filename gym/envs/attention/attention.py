@@ -256,15 +256,15 @@ class AttentionEnv(gym.Env):
 
         if self.num_steps >= max_steps:
             done = True
-            reward = -1
+            reward = -1.0
 
-        if action_type == "category":
+        elif action_type == "category":
             done = True
             if category == self.current["label_index"]:
-                log("CORRECT")
-                reward = 1
+                # More steps means less reward.
+                reward = 1.0 / self.num_steps
             else:
-                reward = -1
+                reward = (-1.0 / max_steps) * self.num_steps
         elif action_type == "up":
             self.up()
         elif action_type == "right":
