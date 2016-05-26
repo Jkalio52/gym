@@ -151,7 +151,7 @@ class Agent(object):
         x = resnet.inference_small(x,
                                    is_training=self.is_training,
                                    num_classes=None,
-                                   use_bias=False,
+                                   use_bias=True,
                                    num_blocks=1)
 
         if FLAGS.use_rnn:
