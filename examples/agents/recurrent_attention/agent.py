@@ -21,6 +21,7 @@ REPLAY_MEMEORY_SIZE = 1000000
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
 tf.app.flags.DEFINE_boolean('use_rnn', False, 'use a rnn to train the network')
+tf.app.flags.DEFINE_boolean('show_train_window', False, 'show the training window')
 tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
@@ -104,6 +105,7 @@ class Agent(object):
         optimizer = tf.train.GradientDescentOptimizer(FLAGS.learning_rate)
         grads = optimizer.compute_gradients(self.loss)
         for grad, var in grads:
+            tf.histogram_summary(var.op.name, var)
             if grad is not None:
                 tf.histogram_summary(var.op.name + '/gradients', grad)
 
@@ -146,7 +148,10 @@ class Agent(object):
         # first axis of inputs is time. conflate with batch in cnn.
         # batch size is always 1 with this agent.
         x = self.inputs
-        x = resnet.inference_small(x, is_training=self.is_training,
+        x = resnet.inference_small(x,
+                                   is_training=self.is_training,
+                                   num_classes=None,
+                                   use_bias=False,
                                    num_blocks=1)
 
         if FLAGS.use_rnn:
@@ -232,7 +237,7 @@ class Agent(object):
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
 
-    def act(self, observation, train=True):
+    def act(self, observation, is_training=True):
         #print "observation mean", np.mean(observation)
         #print "observation shape", observation.shape
         assert observation.shape == (FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
@@ -241,7 +246,7 @@ class Agent(object):
         # dqn_epsilon. dqn_epsilon starts at 1.0 and decays to 0.1 over
         # 1,000,000 steps. So at the beginning we only make random actions
         # while towards the end we determine the action 90% of the time.
-        if train:
+        if is_training:
             step = self.sess.run(self.global_step)
             e = (-0.9 / 1000000) * step + 1.0
             dqn_epsilon = max(e, 0.1)
@@ -255,6 +260,7 @@ class Agent(object):
 
         # Otherwise select an action that maximizes Q
         assert self.current_ep.step < FLAGS.max_episode_steps
+
         action = self.sess.run(self.last_maximizing_action, {
            self.is_training: False,
            self.inputs: self.observations,
@@ -266,20 +272,24 @@ class Agent(object):
         self.observations = observation[np.newaxis,:]
         self.current_ep = Episode()
 
-    def store(self, observation, action, reward, done, correct_answer):
+    def store(self, observation, action, reward, done, is_training):
         ep = self.current_ep
         ep.store(action, reward)
 
         done = (done or ep.step >= FLAGS.max_episode_steps)
 
+        prev_num_observations = self.observations.shape[0]
         self.observations = np.concatenate((self.observations, observation[np.newaxis,:]))
+        assert self.observations.shape[0] == 1 + prev_num_observations
 
         if done:
             ep.done(self.observations)
             self.observations = None
             log("episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames))
 
-            self.replay_memory.store(ep)
+            if is_training:
+                self.replay_memory.store(ep)
+
             self.current_ep = None
 
     def train(self):
@@ -365,11 +375,12 @@ def main(_):
         agent.reset(observation)
 
         for t in xrange(FLAGS.max_episode_steps):
-            env.render()
+            mode = 'human' if FLAGS.show_train_window else 'rgb_array'
+            env.render(mode=mode)
             action = agent.act(observation)
-            observation, reward, done, info = env.step(action)
+            observation, reward, done, _ = env.step(action)
             #print "action, reward, done", (action, reward, done)
-            agent.store(observation, action, reward, done, info)
+            agent.store(observation, action, reward, done, is_training=True)
             agent.train()
             if done: break
 
@@ -387,9 +398,10 @@ def validation(agent, env_val):
         actions = []
         for t in xrange(FLAGS.max_episode_steps):
             env_val.render(mode='rgb_array')
-            action = agent.act(observation, train=False)
+            action = agent.act(observation, is_training=False)
             actions.append(action_human_str(action))
-            observation, reward, done, info = env_val.step(action)
+            observation, reward, done, _ = env_val.step(action)
+            agent.store(observation, action, reward, done, is_training=False)
             if reward > 0:
                 assert done
                 correct += 1
