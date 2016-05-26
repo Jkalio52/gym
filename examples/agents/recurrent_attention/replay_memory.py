@@ -4,7 +4,7 @@ import time
 
 
 class ReplayMemory:
-    def __init__(self, path, max_size=1000000):
+    def __init__(self, path, max_size=100000):
         self.max_size = max_size
         self.path = path
 

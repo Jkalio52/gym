@@ -1,22 +1,23 @@
+from skimage.io import imread # for some reason this needs to be loaded before tf
+
 import sys
 import os
 import errno
 import gym
 import time
-import skimage.io # for some reason this needs to be loaded before tf
+import skimage.io
 import tensorflow as tf
 import numpy as np
 import random
 
 import resnet as resnet
-from replay_memory import ReplayMemory 
+from replay_memory import ReplayMemory
 
 from tensorflow.models.rnn.rnn_cell import GRUCell
-from gym.envs.attention.actions import *
+from gym.envs.attention.common import *
 
 DQN_GAMMA = 0.99
 MOVING_AVERAGE_DECAY = 0.9
-REPLAY_MEMEORY_SIZE = 1000000
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
@@ -39,31 +40,65 @@ def log(msg):
     if DEBUG: print msg
 
 class Episode:
-    def __init__(self):
-        self.obvs = None # Set in done()
+    def __init__(self, first_observation_params):
         self.actions = []
         self.rewards = []
         self.step = 0
         self._done = False
+        self._obvs_set = False
+        self.img_fn = first_observation_params[0]
+        self.y_params = [ first_observation_params[1] ]
+        self.x_params = [ first_observation_params[2] ]
+        self.zoom_params = [ first_observation_params[3] ]
+
+    @property
+    def obvs(self):
+        assert self._done
+        if self._obvs_set:
+            return self._obvs
+
+        # TODO need data_dir
+        data_dir = "/Users/ryan/data/imagenet-small/imagenet-small-train"
+
+        full_img_fn = os.path.join(data_dir, self.img_fn)
+        img = imread(full_img_fn)
+        if len(img.shape) == 2:
+            img = np.dstack([img, img, img])
+
+        self._obvs = np.zeros((self.num_frames, FLAGS.glimpse_size, FLAGS.glimpse_size, 3))
+        for i in range(self.num_frames):
+            frame = make_observation(img=img,
+                glimpse_size=FLAGS.glimpse_size,
+                y=self.y_params[i],
+                x=self.x_params[i],
+                zoom=self.zoom_params[i])
+            self._obvs[i,:] = frame
+
+        self._obvs_set = True
+        return self._obvs
+
 
     @property
     def num_frames(self):
         assert self._done
-        return self.obvs.shape[0]
+        return len(self.y_params)
 
     @property
     def num_actions(self):
         assert self._done
         return self.step
 
-    def done(self, obvs):
+    def done(self):
         self._done = True
-        self.obvs = obvs
 
-    def store(self, action, reward):
+    def store(self, observation_params, action, reward):
         assert not self._done
+        assert observation_params[0] == self.img_fn
         self.actions.append(action)
         self.rewards.append(reward)
+        self.y_params.append(observation_params[1])
+        self.x_params.append(observation_params[2])
+        self.zoom_params.append(observation_params[3])
         self.step += 1
 
 class Agent(object):
@@ -75,7 +110,6 @@ class Agent(object):
 
         self.replay_memory = ReplayMemory(self.replay_memory_path)
         self.current_ep = None # set in reset()
-        self.observations = None
 
         self.sess = sess
 
@@ -88,7 +122,7 @@ class Agent(object):
         self._setup_train()
 
     def _maybe_delete(self):
-        # If we aren't resuming and the train dir exists prompt to delete 
+        # If we aren't resuming and the train dir exists prompt to delete
         if not FLAGS.resume and os.path.isdir(FLAGS.train_dir):
             print "Starting a new training session but %s exists" % FLAGS.train_dir
             sys.stdout.write("Do you want to delete all the files and recreate it [y] ")
@@ -215,7 +249,7 @@ class Agent(object):
         tf.scalar_summary('loss', self.loss)
 
         # loss_avg
-        ema = tf.train.ExponentialMovingAverage(0.99, self.global_step)
+        ema = tf.train.ExponentialMovingAverage(0.999, self.global_step)
         tf.add_to_collection(resnet.UPDATE_OPS_COLLECTION, ema.apply([self.loss]))
         loss_avg = ema.average(self.loss)
         tf.scalar_summary('loss_avg', loss_avg)
@@ -268,13 +302,13 @@ class Agent(object):
 
         return action
 
-    def reset(self, observation):
+    def reset(self, observation, observation_params):
         self.observations = observation[np.newaxis,:]
-        self.current_ep = Episode()
+        self.current_ep = Episode(observation_params)
 
-    def store(self, observation, action, reward, done, is_training):
+    def store(self, observation, action, reward, done, is_training, observation_params):
         ep = self.current_ep
-        ep.store(action, reward)
+        ep.store(observation_params, action, reward)
 
         done = (done or ep.step >= FLAGS.max_episode_steps)
 
@@ -283,7 +317,12 @@ class Agent(object):
         assert self.observations.shape[0] == 1 + prev_num_observations
 
         if done:
-            ep.done(self.observations)
+            ep.done()
+
+            if DEBUG and is_training:
+                # This is expensive!
+                np.testing.assert_allclose(ep.obvs, self.observations)
+
             self.observations = None
             log("episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames))
 
@@ -335,7 +374,7 @@ class Agent(object):
         o = self.sess.run(i, {
             self.is_training: True,
             self.is_terminal: is_terminal,
-            self.inputs: obvs, 
+            self.inputs: obvs,
             self.last_reward: last_reward,
             self.last_action: last_action,
         })
@@ -372,7 +411,7 @@ def main(_):
     for i_episode in xrange(1, FLAGS.num_episodes):
         observation = env.reset()
 
-        agent.reset(observation)
+        agent.reset(observation, env.backdoor_observation_params())
 
         for t in xrange(FLAGS.max_episode_steps):
             mode = 'human' if FLAGS.show_train_window else 'rgb_array'
@@ -380,21 +419,27 @@ def main(_):
             action = agent.act(observation)
             observation, reward, done, _ = env.step(action)
             #print "action, reward, done", (action, reward, done)
-            agent.store(observation, action, reward, done, is_training=True)
+            agent.store(
+                observation=observation,
+                observation_params=env.backdoor_observation_params(),
+                action=action,
+                reward=reward,
+                done=done,
+                is_training=True)
             agent.train()
             if done: break
 
         if i_episode % 10 == 0:
             validation(agent, env_val)
-       
+
     #env.monitor.close()
-    
+
 def validation(agent, env_val):
     correct = 0
     total = 10
     for _ in xrange(0, total):
         observation = env_val.reset()
-        agent.reset(observation)
+        agent.reset(observation, env_val.backdoor_observation_params())
         debug_str = ''
         for t in xrange(FLAGS.max_episode_steps):
             env_val.render(mode='rgb_array')
@@ -403,7 +448,13 @@ def validation(agent, env_val):
             debug_str += action_human_str(action) + ' '
 
             observation, reward, done, _ = env_val.step(action)
-            agent.store(observation, action, reward, done, is_training=False)
+            agent.store(
+                observation=observation,
+                observation_params=env_val.backdoor_observation_params(),
+                action=action,
+                reward=reward,
+                done=done,
+                is_training=False)
             if reward > 0:
                 assert done
                 correct += 1
