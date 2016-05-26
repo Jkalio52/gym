@@ -425,7 +425,7 @@ def main(_):
             agent.train()
             if done: break
 
-        if i_episode % 10 == 0:
+        if i_episode % 20 == 0:
             validation(agent, env_val)
 
     #env.monitor.close()
@@ -460,7 +460,7 @@ def validation(agent, env_val):
         if reward > 0:
             correct += 1
 
-        debug_str += " = %.1f " % total_reward
+        #debug_str += " = %.1f " % total_reward
         print debug_str
 
     accuracy = float(correct) / total
