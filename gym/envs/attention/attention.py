@@ -6,14 +6,11 @@ import time
 import os
 import re
 import sys
-from synset import *
-
 import numpy as np
 
-num_categories = 3
-num_directional_actions = 4 # up, right, down, left
-num_zoom_actions = 2 # zoom in, zoom out
-num_actions = num_categories + num_directional_actions + num_zoom_actions
+from synset import *
+from actions import *
+
 
 human_size = 400
 human_bottom_padding = 1
@@ -342,52 +339,38 @@ class AttentionEnv(gym.Env):
         log("zoom out")
 
     def _step(self, action):
-        max_steps = 10
         self.num_steps += 1
-
-        assert isinstance(action, int)
-
+        max_steps = 10
         done = False
         reward = 0
 
-        if action < num_categories:
-            action_type = "category" 
-            category = action
-            done = True
-            log("category %d" % category)
-        elif action < num_categories + num_directional_actions:
-            action_type = "directional"
-            direction = action - num_categories
-            if direction == 0:
-                self.up()
-            elif direction == 1:
-                self.right()
-            elif direction == 2:
-                self.down()
-            elif direction == 3:
-                self.left()
-            else:
-                assert False, 'unreachable'
-        else:
-            action_type = "zoom"
-            zoom = action - (num_categories + num_directional_actions)
-            assert zoom == 0 or zoom == 1
-            if zoom == 0:
-                self.zoom_in()
-            elif zoom == 1:
-                self.zoom_out()
-            else:
-                assert False, 'unreachable'
+        action_type, category = action_str(action)
 
         if self.num_steps >= max_steps:
             done = True
+            reward = -1
 
         if action_type == "category":
+            done = True
             if category == self.current["label_index"]:
                 log("CORRECT")
                 reward = 1
             else:
                 reward = -1
+        elif action_type == "up":
+            self.up()
+        elif action_type == "right":
+            self.right()
+        elif action_type == "down":
+            self.down()
+        elif action_type == "left":
+            self.left()
+        elif action_type == "zoom_in":
+            self.zoom_in()
+        elif action_type == "zoom_out":
+            self.zoom_out()
+        else:
+            assert False
 
         observation = self.make_observation()
         info = self.current["label_index"]

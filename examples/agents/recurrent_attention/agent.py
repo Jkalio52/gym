@@ -12,11 +12,7 @@ import resnet as resnet
 from replay_memory import ReplayMemory 
 
 from tensorflow.models.rnn.rnn_cell import GRUCell
-
-num_categories = 3 # using the first 10 categories of imagenet for now.
-num_directional_actions = 4 # up, right, down, left
-num_zoom_actions = 2 # zoom in, zoom out
-num_actions = num_categories + num_directional_actions + num_zoom_actions
+from gym.envs.attention.actions import *
 
 DQN_GAMMA = 0.99
 MOVING_AVERAGE_DECAY = 0.9
@@ -24,6 +20,7 @@ REPLAY_MEMEORY_SIZE = 1000000
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
+tf.app.flags.DEFINE_boolean('use_rnn', False, 'use a rnn to train the network')
 tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
@@ -151,16 +148,16 @@ class Agent(object):
         x = self.inputs
         x = resnet.inference_small(x, is_training=self.is_training,
                                    num_blocks=1)
-        # add batch dimension. output: batch=1, time, height, width, depth=3
-        x = tf.expand_dims(x, 0)
-        # END CNN
 
-        self.cell = GRUCell(FLAGS.hidden_size)
-        x, states = tf.nn.dynamic_rnn(self.cell, x, dtype='float')
+        if FLAGS.use_rnn:
+            # add batch dimension. output: batch=1, time, height, width, depth=3
+            x = tf.expand_dims(x, 0)
+            self.cell = GRUCell(FLAGS.hidden_size)
+            x, states = tf.nn.dynamic_rnn(self.cell, x, dtype='float')
 
-        assert states.get_shape().as_list() == [None, self.cell.state_size]
-        assert x.get_shape().as_list() == [1,  None, self.cell.output_size]
-        x = tf.squeeze(x, squeeze_dims=[0]) # remove first axis
+            assert states.get_shape().as_list() == [None, self.cell.state_size]
+            assert x.get_shape().as_list() == [1,  None, self.cell.output_size]
+            x = tf.squeeze(x, squeeze_dims=[0]) # remove first axis
 
         q_values = tf.contrib.layers.fully_connected(x, num_actions,
             weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
@@ -341,11 +338,13 @@ class Agent(object):
 
         print "step %d: %f loss" % (step, loss_value)
 
-        if step % 100 == 0 and step > 0:
+        if step % 1000 == 0 and step > 0:
             print 'save checkpoint'
             self.saver.save(self.sess, self.checkpoint_path, global_step=self.global_step)
 
 def main(_):
+    print_flags()
+
     os.environ["IMAGENET_DIR"] = "/Users/ryan/data/imagenet-small/imagenet-small-train"
     env = gym.make('Attention%d-v0' % FLAGS.glimpse_size)
 
@@ -385,19 +384,26 @@ def validation(agent, env_val):
     for _ in xrange(0, total):
         observation = env_val.reset()
         agent.reset(observation)
+        actions = []
         for t in xrange(FLAGS.max_episode_steps):
-            env_val.render(mode='human')
+            env_val.render(mode='rgb_array')
             action = agent.act(observation, train=False)
+            actions.append(action_human_str(action))
             observation, reward, done, info = env_val.step(action)
             if reward > 0:
                 assert done
                 correct += 1
             if done: break
+        print ' '.join(actions)
 
     accuracy = float(correct) / total
     agent.update_val_accuracy(accuracy)
     print "validation accuracy %.2f" % accuracy
 
+def print_flags():
+    flags = FLAGS.__dict__['__flags']
+    for f in flags:
+        print f, flags[f]
 
 if __name__ == '__main__':
     tf.app.run()
