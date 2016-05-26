@@ -21,6 +21,63 @@ DEBUG = False
 def log(msg):
     if DEBUG: print msg
 
+def make_observation(img, glimpse_size, y, x, zoom):
+    # Output is always glimpse_size x glimpse_size x 3
+
+    img_shape = img.shape
+    img_height = img_shape[0]
+    img_width = img_shape[1]
+    assert 3 == img_shape[2], "img should be RGB"
+
+    y_min, y_max, x_min, x_max = attention_bounds(y, x, zoom)
+
+    y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel(img_shape,
+        y_min, y_max, x_min, x_max)
+
+    if y_min_px >= img_height or y_max_px <= 0 or \
+       x_min_px >= img_width  or x_max_px <= 0:
+        return np.zeros((glimpse_size, glimpse_size, 3)) 
+
+    pad_top = max(0, -y_min_px)
+    pad_bottom = max(0, y_max_px - img_height)
+    pad_left = max(0, -x_min_px)
+    pad_right = max(0, x_max_px - img_width)
+
+    y_min_px = max(0, y_min_px)
+    y_max_px = min(img_height, y_max_px)
+    x_min_px = max(0, x_min_px)
+    x_max_px = min(img_width, x_max_px)
+
+    crop = img[y_min_px:y_max_px, x_min_px:x_max_px, :]
+
+    pad = ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0))
+
+    padded_crop = np.pad(crop, pad, 'constant', constant_values=0)
+
+    #print "img shape", img_shape
+    #print "pad", pad
+    #print "crop shape", crop.shape
+    #print padded_crop.shape
+    #print "mean padded_crop", np.mean(padded_crop)
+
+    observation = imresize(padded_crop,
+                           (glimpse_size, glimpse_size))
+    assert observation.shape == (glimpse_size, glimpse_size, 3)
+
+    if DEBUG:
+        print "mean observation before scale", np.mean(observation)
+
+    observation = observation / 255.0 # scale between 0 and 1
+    observation -= 0.5 # between -0.5 and 0.5
+    observation *= 2.0 # between -1 and 1
+
+    if DEBUG:
+        print "mean observation after scale", np.mean(observation)
+        assert -1.0 <= np.min(observation) and np.max(observation) <= 1.0
+
+    return observation
+
+
 
 def float_to_pixel(img_shape, y1, y2, x1, x2):
     """
@@ -107,63 +164,6 @@ class AttentionEnv(gym.Env):
         self.action_space = spaces.Discrete(num_actions)
         self.observation_space = spaces.Box(-1.0, 1.0,
                                             (glimpse_size, glimpse_size, 3))
-
-    def img_center(self):
-        img_shape = self.img.shape
-        img_height = img_shape[0]
-        img_width = img_shape[1]
-        return (img_height / 2, img_width / 2)
-
-
-    def make_observation(self):
-        # Output is always glimpse_size x glimpse_size x 3
-
-        img_shape = self.img.shape
-        img_height = img_shape[0]
-        img_width = img_shape[1]
-        assert 3 == img_shape[2], "img should be RGB"
-
-        y_min, y_max, x_min, x_max = attention_bounds(self.y, self.x, self.zoom)
-
-        y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel(img_shape,
-            y_min, y_max, x_min, x_max)
-
-        if y_min_px >= img_height or y_max_px <= 0 or \
-           x_min_px >= img_width  or x_max_px <= 0:
-            return np.zeros((self.glimpse_size, self.glimpse_size, 3)) 
-
-        pad_top = max(0, -y_min_px)
-        pad_bottom = max(0, y_max_px - img_height)
-        pad_left = max(0, -x_min_px)
-        pad_right = max(0, x_max_px - img_width)
-
-        y_min_px = max(0, y_min_px)
-        y_max_px = min(img_height, y_max_px)
-        x_min_px = max(0, x_min_px)
-        x_max_px = min(img_width, x_max_px)
-
-        crop = self.img[y_min_px:y_max_px, x_min_px:x_max_px, :]
-
-        pad = ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0))
-
-        padded_crop = np.pad(crop, pad, 'constant', constant_values=0)
-
-        #print "img shape", img_shape
-        #print "pad", pad
-        #print "crop shape", crop.shape
-        #print padded_crop.shape
-        #print "mean padded_crop", np.mean(padded_crop)
-
-        observation = imresize(padded_crop,
-                               (self.glimpse_size, self.glimpse_size))
-        assert observation.shape == (self.glimpse_size, self.glimpse_size, 3)
-
-        #print "mean observation before scale", np.mean(observation)
-        observation = observation / 255.0
-        #print "mean observation after scale", np.mean(observation)
-
-        return observation
-
 
 
     def _human(self, glimpse):
@@ -262,16 +262,18 @@ class AttentionEnv(gym.Env):
         self.current = self.data[self.index]
         img_fn = self.current['filename']
 
+        self.img_fn = img_fn
         self.img = imread(img_fn)
         self.img = self.img / 255.0
 
         if len(self.img.shape) == 2:
             self.img = np.dstack([self.img, self.img, self.img])
 
-        m = np.mean(self.img)
-        assert 0.0 <= m and m <= 1.0
+        if DEBUG:
+            m = np.mean(self.img)
+            assert 0.0 <= m and m <= 1.0
 
-        #print "loaded", img_fn
+        log("loaded %s" % img_fn)
 
     def _reset(self):
         self.num_steps = 0
@@ -290,7 +292,14 @@ class AttentionEnv(gym.Env):
             else:
                 break
 
-        return self.make_observation()
+        return self._make_observation()
+
+    def _make_observation(self):
+        return make_observation(img=self.img,
+            glimpse_size=self.glimpse_size, 
+            y=self.y, 
+            x=self.x,
+            zoom=self.zoom)
 
     def _render(self, mode="human", close=False):
         if close:
@@ -298,7 +307,7 @@ class AttentionEnv(gym.Env):
                 self.viewer.close()
             return
 
-        glimpse = self.make_observation()
+        glimpse = self._make_observation()
 
         if mode == 'rgb_array':
             return glimpse
@@ -372,7 +381,7 @@ class AttentionEnv(gym.Env):
         else:
             assert False
 
-        observation = self.make_observation()
+        observation = self._make_observation()
         info = self.current["label_index"]
 
         return observation, reward, done, info
