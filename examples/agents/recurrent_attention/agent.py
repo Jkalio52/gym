@@ -175,8 +175,8 @@ class Agent(object):
         self.is_training = tf.placeholder('bool', [], name='is_training')
         self.is_terminal = tf.placeholder('bool', [], name='is_terminal')
         self.inputs = tf.placeholder('float', [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3], name='inputs')
-        self.last_reward = tf.placeholder('float', [], name='last_reward')
-        self.last_action = tf.placeholder('int32', [], name='last_action')
+        self.reward = tf.placeholder('float', [], name='reward')
+        self.action = tf.placeholder('int32', [], name='action')
 
         # CNN
         # first axis of inputs is time. conflate with batch in cnn.
@@ -231,14 +231,14 @@ class Agent(object):
         second_last_values = action_value_slice(input_size - 2)
         inferred_future_reward = tf.squeeze(
             tf.slice(second_last_values,
-                     tf.expand_dims(self.last_action, 0),
+                     tf.expand_dims(self.action, 0),
                      [1]))
 
         def terminal():
-            return self.last_reward
+            return self.reward
 
         def not_teriminal():
-            return self.last_reward + DQN_GAMMA * last_max_value
+            return self.reward + DQN_GAMMA * last_max_value
 
         expected_future_reward = tf.cond(self.is_terminal, terminal, not_teriminal)
 
@@ -351,20 +351,17 @@ class Agent(object):
         #print "random_frame", random_frame
 
         is_terminal = (random_frame + 1 == random_episode.num_frames - 1)
-        last_reward = random_episode.rewards[random_frame]
-        last_action = random_episode.actions[random_frame]
+        reward = random_episode.rewards[random_frame]
+        action = random_episode.actions[random_frame]
 
         #print "is_terminal", is_terminal
-        #print "last_reward", last_reward
-        #print "last_action", last_action
+        #print "reward", reward
+        #print "action", action
 
-        assert last_reward == 0 or is_terminal
+        assert reward == 0 or is_terminal
 
-        # We need phi_j and phi_j+1 . Starting at zero means backproping
-        # thru the entire episode
-        obvs = random_episode.obvs[0:random_frame+2]
-
-        #print "obvs.shape", obvs.shape
+        # phi_j and phi_j+1 
+        obvs = random_episode.obvs[random_frame:random_frame+2]
 
         i = [self.train_op, self.loss]
 
@@ -375,8 +372,8 @@ class Agent(object):
             self.is_training: True,
             self.is_terminal: is_terminal,
             self.inputs: obvs,
-            self.last_reward: last_reward,
-            self.last_action: last_action,
+            self.reward: reward,
+            self.action: action,
         })
 
         loss_value = o[1]
@@ -385,7 +382,8 @@ class Agent(object):
             summary_str = o[2]
             self.summary_writer.add_summary(summary_str, step)
 
-        print "step %d: %f loss" % (step, loss_value)
+        if step % 5 == 0:
+            print "step %d: %f loss" % (step, loss_value)
 
         if step % 1000 == 0 and step > 0:
             print 'save checkpoint'
