@@ -262,9 +262,12 @@ class AttentionEnv(gym.Env):
             done = True
             if category == self.current["label_index"]:
                 # More steps means less reward.
-                reward = 1.0 / self.num_steps
+                #reward = 1.0 / self.num_steps
+                reward = 1.0
             else:
-                reward = (-1.0 / max_steps) * self.num_steps
+                #reward = (-1.0 / max_steps) * self.num_steps
+                #reward = -1.0
+                pass
         elif action_type == "up":
             self.up()
         elif action_type == "right":
