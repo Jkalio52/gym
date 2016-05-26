@@ -21,12 +21,12 @@ MOVING_AVERAGE_DECAY = 0.9
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
-tf.app.flags.DEFINE_boolean('use_rnn', False, 'use a rnn to train the network')
+tf.app.flags.DEFINE_boolean('use_rnn', True, 'use a rnn to train the network')
 tf.app.flags.DEFINE_boolean('show_train_window', False, 'show the training window')
 tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
-tf.app.flags.DEFINE_integer('hidden_size', 1024, '')
+tf.app.flags.DEFINE_integer('hidden_size', 64, '')
 tf.app.flags.DEFINE_integer('max_episode_steps', 10, '')
 tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
                            """Directory where to write event logs """
@@ -251,8 +251,8 @@ class Agent(object):
         # loss_avg
         ema = tf.train.ExponentialMovingAverage(0.999, self.global_step)
         tf.add_to_collection(resnet.UPDATE_OPS_COLLECTION, ema.apply([self.loss]))
-        loss_avg = ema.average(self.loss)
-        tf.scalar_summary('loss_avg', loss_avg)
+        self.loss_avg = ema.average(self.loss)
+        tf.scalar_summary('loss_avg', self.loss_avg)
 
         # validation error avg
         ema = tf.train.ExponentialMovingAverage(0.9, self.val_step)
@@ -361,7 +361,7 @@ class Agent(object):
         # phi_j and phi_j+1 
         obvs = random_episode.obvs[random_frame:random_frame+2]
 
-        i = [self.train_op, self.loss]
+        i = [self.train_op, self.loss_avg]
 
         if write_summary:
             i.append(self.summary_op)
@@ -381,7 +381,7 @@ class Agent(object):
             self.summary_writer.add_summary(summary_str, step)
 
         if step % 5 == 0:
-            print "step %d: %f loss" % (step, loss_value)
+            print "step %d: %.3f loss avg" % (step, loss_value)
 
         if step % 1000 == 0 and step > 0:
             print 'save checkpoint'

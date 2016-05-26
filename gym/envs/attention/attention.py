@@ -296,11 +296,11 @@ def load_data(data_dir):
     data = []
     i = 0
 
-    print "listing files in", data_dir
+    log("listing files in %s" % data_dir)
     start_time = time.time()
     files = file_list(data_dir)
     duration = time.time() - start_time
-    print "took %f sec" % duration
+    log("took %f sec" % duration)
 
     for img_fn in files:
         assert '.JPEG' == os.path.splitext(img_fn)[1]
