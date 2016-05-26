@@ -215,7 +215,7 @@ class Agent(object):
         tf.scalar_summary('loss', self.loss)
 
         # loss_avg
-        ema = tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY, self.global_step)
+        ema = tf.train.ExponentialMovingAverage(0.99, self.global_step)
         tf.add_to_collection(resnet.UPDATE_OPS_COLLECTION, ema.apply([self.loss]))
         loss_avg = ema.average(self.loss)
         tf.scalar_summary('loss_avg', loss_avg)
@@ -395,18 +395,21 @@ def validation(agent, env_val):
     for _ in xrange(0, total):
         observation = env_val.reset()
         agent.reset(observation)
-        actions = []
+        debug_str = ''
         for t in xrange(FLAGS.max_episode_steps):
             env_val.render(mode='rgb_array')
             action = agent.act(observation, is_training=False)
-            actions.append(action_human_str(action))
+
+            debug_str += action_human_str(action) + ' '
+
             observation, reward, done, _ = env_val.step(action)
             agent.store(observation, action, reward, done, is_training=False)
             if reward > 0:
                 assert done
                 correct += 1
+                debug_str += "GOOD"
             if done: break
-        print ' '.join(actions)
+        print debug_str
 
     accuracy = float(correct) / total
     agent.update_val_accuracy(accuracy)
