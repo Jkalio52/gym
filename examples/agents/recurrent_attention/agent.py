@@ -16,7 +16,8 @@ from replay_memory import ReplayMemory
 from tensorflow.models.rnn.rnn_cell import GRUCell
 from gym.envs.attention.common import *
 
-BATCH_SIZE=1
+
+DEBUG = False
 DQN_GAMMA = 0.99
 MOVING_AVERAGE_DECAY = 0.9
 
@@ -33,6 +34,7 @@ tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000,
                             'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
+tf.app.flags.DEFINE_integer('batch_size', 1, '') # currently batch_size 1 is supported
 tf.app.flags.DEFINE_integer('hidden_size', 64, '')
 tf.app.flags.DEFINE_integer('max_episode_steps', 10, '')
 tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
@@ -40,8 +42,6 @@ tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
                            """and checkpoint.""")
 tf.app.flags.DEFINE_string('restore_resnet', '',
                            'path to resnet ckpt to restore from')
-
-DEBUG = False
 
 
 def log(msg):
@@ -217,24 +217,34 @@ class Agent(object):
             cell = GRUCell(FLAGS.hidden_size)
 
             self.hidden_state = tf.get_variable('hidden_state',
-                shape=[BATCH_SIZE, cell.state_size],
+                shape=[FLAGS.batch_size, cell.state_size],
                 initializer=tf.constant_initializer(0.0),
                 trainable=False)
             self.reset_hidden_state = self.hidden_state.initializer
 
-            #x = tf.Print(x, [self.hidden_state], "hidden_state")
+            def get_hidden_state():
+                return self.hidden_state
 
-            x, final_state = tf.nn.dynamic_rnn(cell, x, dtype='float',
-                                               initial_state=self.hidden_state)
+            zero_state = tf.zeros_like(self.hidden_state)
+            def get_zero_state():
+                return zero_state
 
-            assert final_state.get_shape().as_list() == [BATCH_SIZE, cell.state_size]
-            assert x.get_shape().as_list() == [BATCH_SIZE, None, cell.output_size]
+            initial_state = tf.cond(self.is_training, get_zero_state, get_hidden_state)
+            if DEBUG:
+                initial_state = tf.Print(initial_state, [initial_state], "initial_state")
 
-            # Always save the hidden state so that unless reset_hidden_state is called
-            # the rnn continues where it left off.
-            update_hidden_state = self.hidden_state.assign(final_state)
-            with tf.control_dependencies([update_hidden_state]):
-                x = tf.identity(x)
+            x, final_state = tf.nn.dynamic_rnn(cell, x, dtype='float', initial_state=initial_state)
+
+            assert final_state.get_shape().as_list() == [FLAGS.batch_size, cell.state_size]
+            assert x.get_shape().as_list() == [FLAGS.batch_size, None, cell.output_size]
+
+            def update_hidden_state():
+                # Always save the hidden state so that unless reset_hidden_state is called
+                # the rnn continues where it left off.
+                with tf.control_dependencies([self.hidden_state.assign(final_state)]):
+                    return tf.identity(x)
+
+            x = tf.cond(self.is_training, lambda: x, update_hidden_state)
 
             x = tf.squeeze(x, squeeze_dims=[0])  # remove first axis
 
@@ -383,8 +393,8 @@ class Agent(object):
             log("reward %f" % reward)
             log("action %d" % action)
 
-            # phi_j and phi_j+1
-            obvs = random_episode.obvs[random_frame:random_frame + 2]
+            # all frames up to phi_j and phi_j+1
+            obvs = random_episode.obvs[0:random_frame + 2]
 
             if frames == None:
                 frames = obvs[np.newaxis, :]
@@ -395,8 +405,6 @@ class Agent(object):
         rewards = np.asarray(rewards, dtype='float')
         actions = np.asarray(actions, dtype='int32')
 
-        assert frames.shape == (batch_size, 2, FLAGS.glimpse_size,
-                                FLAGS.glimpse_size, 3)
         assert are_terminal.shape == (batch_size, )
         assert rewards.shape == (batch_size, )
         assert actions.shape == (batch_size, )
@@ -410,7 +418,7 @@ class Agent(object):
 
         if self.replay_memory.count() < 1: return
 
-        frames, are_terminal, rewards, actions = self.build_batch(1)
+        frames, are_terminal, rewards, actions = self.build_batch(FLAGS.batch_size)
 
         i = [self.train_op, self.loss_avg]
 
