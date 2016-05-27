@@ -334,6 +334,54 @@ class Agent(object):
 
             self.current_ep = None
 
+    def build_batch(self, batch_size):
+        frames = None
+        are_terminal = []
+        rewards = []
+        actions = []
+        for i in range(batch_size):
+            random_episode = self.replay_memory.sample()
+            assert random_episode._done
+
+            # random_frame is "j" in the dqn paper. so it can be anything but the last.
+            random_frame = np.random.randint(0, random_episode.num_frames - 1)
+
+            log("num frames %d" % random_episode.num_frames)
+            log("rewards " + str(random_episode.rewards))
+            log("actions " + str(random_episode.actions))
+            log("random_frame %d" % random_frame)
+
+            is_terminal = (random_frame + 1 == random_episode.num_frames - 1)
+            reward = random_episode.rewards[random_frame]
+            action = random_episode.actions[random_frame]
+
+            are_terminal.append(is_terminal)
+            rewards.append(reward)
+            actions.append(action)
+
+            log("is_terminal %d" % is_terminal)
+            log("reward %f" % reward)
+            log("action %d" % action)
+
+            # phi_j and phi_j+1
+            obvs = random_episode.obvs[random_frame:random_frame+2]
+
+            if frames == None:
+                frames = obvs[np.newaxis,:]
+            else:
+                frames = np.concatenate(frames, obvs[np.newaxis,:])
+
+        are_terminal = np.asarray(are_terminal, dtype='bool') 
+        rewards = np.asarray(rewards, dtype='float') 
+        actions = np.asarray(actions, dtype='int32') 
+
+        assert frames.shape == (batch_size, 2, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
+        assert are_terminal.shape == (batch_size,)
+        assert rewards.shape == (batch_size,)
+        assert actions.shape == (batch_size,)
+
+        return frames, are_terminal, rewards, actions
+
     def train(self):
         step = self.sess.run(self.global_step)
         write_summary = (step % 10 == 0 and step > 1)
@@ -341,28 +389,7 @@ class Agent(object):
 
         if self.replay_memory.count() < 1: return
 
-        random_episode = self.replay_memory.sample()
-
-        assert random_episode._done
-
-        # random_frame is "j" in the dqn paper. so it can be anything but the last.
-        random_frame = np.random.randint(0, random_episode.num_frames - 1)
-
-        #print "num frames", random_episode.num_frames
-        #print "rewards", random_episode.rewards
-        #print "actions", random_episode.actions
-        #print "random_frame", random_frame
-
-        is_terminal = (random_frame + 1 == random_episode.num_frames - 1)
-        reward = random_episode.rewards[random_frame]
-        action = random_episode.actions[random_frame]
-
-        #print "is_terminal", is_terminal
-        #print "reward", reward
-        #print "action", action
-
-        # phi_j and phi_j+1 
-        obvs = random_episode.obvs[random_frame:random_frame+2]
+        frames, are_terminal, rewards, actions = self.build_batch(1)
 
         i = [self.train_op, self.loss_avg]
 
@@ -371,10 +398,10 @@ class Agent(object):
 
         o = self.sess.run(i, {
             self.is_training: True,
-            self.is_terminal: is_terminal,
-            self.inputs: obvs,
-            self.reward: reward,
-            self.action: action,
+            self.is_terminal: are_terminal[0],
+            self.inputs: frames[0],
+            self.reward: rewards[0],
+            self.action: actions[0],
         })
 
         loss_value = o[1]
