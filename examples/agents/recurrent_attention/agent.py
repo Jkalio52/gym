@@ -16,10 +16,10 @@ from replay_memory import ReplayMemory
 from tensorflow.models.rnn.rnn_cell import GRUCell
 from gym.envs.attention.common import *
 
-
 DEBUG = False
 DQN_GAMMA = 0.99
 MOVING_AVERAGE_DECAY = 0.9
+BATCH_SIZE = 1  # TODO allow training on batches
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
@@ -34,7 +34,6 @@ tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000,
                             'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
-tf.app.flags.DEFINE_integer('batch_size', 1, '') # currently batch_size 1 is supported
 tf.app.flags.DEFINE_integer('hidden_size', 64, '')
 tf.app.flags.DEFINE_integer('max_episode_steps', 10, '')
 tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
@@ -120,7 +119,7 @@ class Agent(object):
 
         self.replay_memory = ReplayMemory(self.replay_memory_path)
         self.current_ep = None  # set in reset()
-        self.last_frame = None # set in reset() and store()
+        self.last_frame = None  # set in reset() and store()
 
         self.sess = sess
 
@@ -216,8 +215,9 @@ class Agent(object):
             x = tf.expand_dims(x, 0)
             cell = GRUCell(FLAGS.hidden_size)
 
-            self.hidden_state = tf.get_variable('hidden_state',
-                shape=[FLAGS.batch_size, cell.state_size],
+            self.hidden_state = tf.get_variable(
+                'hidden_state',
+                shape=[BATCH_SIZE, cell.state_size],
                 initializer=tf.constant_initializer(0.0),
                 trainable=False)
             self.reset_hidden_state = self.hidden_state.initializer
@@ -226,22 +226,30 @@ class Agent(object):
                 return self.hidden_state
 
             zero_state = tf.zeros_like(self.hidden_state)
+
             def get_zero_state():
                 return zero_state
 
-            initial_state = tf.cond(self.is_training, get_zero_state, get_hidden_state)
+            initial_state = tf.cond(self.is_training, get_zero_state,
+                                    get_hidden_state)
             if DEBUG:
-                initial_state = tf.Print(initial_state, [initial_state], "initial_state")
+                initial_state = tf.Print(initial_state, [initial_state],
+                                         "initial_state")
 
-            x, final_state = tf.nn.dynamic_rnn(cell, x, dtype='float', initial_state=initial_state)
+            x, final_state = tf.nn.dynamic_rnn(
+                cell, x, dtype='float',
+                initial_state=initial_state)
 
-            assert final_state.get_shape().as_list() == [FLAGS.batch_size, cell.state_size]
-            assert x.get_shape().as_list() == [FLAGS.batch_size, None, cell.output_size]
+            assert final_state.get_shape().as_list() == [BATCH_SIZE,
+                                                         cell.state_size]
+            assert x.get_shape().as_list() == [BATCH_SIZE, None,
+                                               cell.output_size]
 
             def update_hidden_state():
                 # Always save the hidden state so that unless reset_hidden_state is called
                 # the rnn continues where it left off.
-                with tf.control_dependencies([self.hidden_state.assign(final_state)]):
+                with tf.control_dependencies([self.hidden_state.assign(
+                        final_state)]):
                     return tf.identity(x)
 
             x = tf.cond(self.is_training, lambda: x, update_hidden_state)
@@ -328,7 +336,7 @@ class Agent(object):
         # Otherwise select an action that maximizes Q
         assert self.current_ep.step < FLAGS.max_episode_steps
 
-        frames = self.last_frame[np.newaxis,:]
+        frames = self.last_frame[np.newaxis, :]
         assert frames.shape == (1, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
 
         action = self.sess.run(self.last_maximizing_action, {
@@ -363,27 +371,26 @@ class Agent(object):
             if is_training:
                 self.replay_memory.store(ep)
 
-
     def build_batch(self, batch_size):
         frames = None
         are_terminal = []
         rewards = []
         actions = []
         for i in range(batch_size):
-            random_episode = self.replay_memory.sample()
-            assert random_episode._done
+            ep = self.replay_memory.sample()
+            assert ep._done
 
-            # random_frame is "j" in the dqn paper. so it can be anything but the last.
-            random_frame = np.random.randint(0, random_episode.num_frames - 1)
+            # j is "j" in the dqn paper. so it can be anything but the last.
+            j = np.random.randint(0, ep.num_frames - 1)
 
-            log("num frames %d" % random_episode.num_frames)
-            log("rewards " + str(random_episode.rewards))
-            log("actions " + str(random_episode.actions))
-            log("random_frame %d" % random_frame)
+            log("num frames %d" % ep.num_frames)
+            log("rewards " + str(ep.rewards))
+            log("actions " + str(ep.actions))
+            log("j %d" % j)
 
-            is_terminal = (random_frame + 1 == random_episode.num_frames - 1)
-            reward = random_episode.rewards[random_frame]
-            action = random_episode.actions[random_frame]
+            is_terminal = (j + 1 == ep.num_frames - 1)
+            reward = ep.rewards[j]
+            action = ep.actions[j]
 
             are_terminal.append(is_terminal)
             rewards.append(reward)
@@ -394,7 +401,7 @@ class Agent(object):
             log("action %d" % action)
 
             # all frames up to phi_j and phi_j+1
-            obvs = random_episode.obvs[0:random_frame + 2]
+            obvs = ep.obvs[0:j + 2]
 
             if frames == None:
                 frames = obvs[np.newaxis, :]
@@ -418,7 +425,7 @@ class Agent(object):
 
         if self.replay_memory.count() < 1: return
 
-        frames, are_terminal, rewards, actions = self.build_batch(FLAGS.batch_size)
+        frames, are_terminal, rewards, actions = self.build_batch(BATCH_SIZE)
 
         i = [self.train_op, self.loss_avg]
 
@@ -536,6 +543,7 @@ def print_flags():
     for f in flags:
         print f, flags[f]
 
+
 def _slice(tensor, index, size):
     # First need to build the begin argument to tf.slice.
     # It should be begin=[index, 0] but TF makes this
@@ -546,6 +554,7 @@ def _slice(tensor, index, size):
 
     s = tf.slice(tensor, begin, [1, size])
     return tf.squeeze(s, squeeze_dims=[0])
+
 
 if __name__ == '__main__':
     tf.app.run()
