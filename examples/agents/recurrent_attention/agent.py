@@ -22,6 +22,8 @@ MOVING_AVERAGE_DECAY = 0.9
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
 tf.app.flags.DEFINE_boolean('use_rnn', True, 'use a rnn to train the network')
+tf.app.flags.DEFINE_boolean('var_histograms', False, 'histogram summaries of every variable')
+tf.app.flags.DEFINE_boolean('grad_histograms', False, 'histogram summaries of every gradient')
 tf.app.flags.DEFINE_boolean('show_train_window', False, 'show the training window')
 tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
@@ -139,8 +141,9 @@ class Agent(object):
         optimizer = tf.train.GradientDescentOptimizer(FLAGS.learning_rate)
         grads = optimizer.compute_gradients(self.loss)
         for grad, var in grads:
-            tf.histogram_summary(var.op.name, var)
-            if grad is not None:
+            if FLAGS.var_histograms:
+                tf.histogram_summary(var.op.name, var)
+            if grad is not None and FLAGS.grad_histograms:
                 tf.histogram_summary(var.op.name + '/gradients', grad)
 
         apply_gradient_op = optimizer.apply_gradients(grads, global_step=self.global_step)
