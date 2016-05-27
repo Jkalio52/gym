@@ -194,17 +194,17 @@ class Agent(object):
     def _build(self):
         self.is_training = tf.placeholder('bool', [], name='is_training')
         self.is_terminal = tf.placeholder('bool', [], name='is_terminal')
-        self.inputs = tf.placeholder(
+        self.frames = tf.placeholder(
             'float', [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3],
-            name='inputs')
+            name='frames')
         self.reward = tf.placeholder('float', [], name='reward')
         self.action = tf.placeholder('int32', [], name='action')
 
-        input_size = tf.shape(self.inputs)[0]
+        input_size = tf.shape(self.frames)[0]
         # CNN
-        # first axis of inputs is time. conflate with batch in cnn.
+        # first axis of frames is time. conflate with batch in cnn.
         # batch size is always 1 with this agent.
-        x = self.inputs
+        x = self.frames
         x = resnet.inference_small(x,
                                    is_training=self.is_training,
                                    num_classes=None,
@@ -318,12 +318,12 @@ class Agent(object):
         # Otherwise select an action that maximizes Q
         assert self.current_ep.step < FLAGS.max_episode_steps
 
-        inputs = self.last_frame[np.newaxis,:]
-        assert inputs.shape == (1, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
+        frames = self.last_frame[np.newaxis,:]
+        assert frames.shape == (1, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
 
         action = self.sess.run(self.last_maximizing_action, {
             self.is_training: False,
-            self.inputs: inputs,
+            self.frames: frames,
         })
 
         return action
@@ -420,7 +420,7 @@ class Agent(object):
         o = self.sess.run(i, {
             self.is_training: True,
             self.is_terminal: are_terminal[0],
-            self.inputs: frames[0],
+            self.frames: frames[0],
             self.reward: rewards[0],
             self.action: actions[0],
         })
