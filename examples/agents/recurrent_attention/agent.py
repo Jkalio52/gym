@@ -16,6 +16,7 @@ from replay_memory import ReplayMemory
 from tensorflow.models.rnn.rnn_cell import GRUCell
 from gym.envs.attention.common import *
 
+BATCH_SIZE=1
 DQN_GAMMA = 0.99
 MOVING_AVERAGE_DECAY = 0.9
 
@@ -119,6 +120,7 @@ class Agent(object):
 
         self.replay_memory = ReplayMemory(self.replay_memory_path)
         self.current_ep = None  # set in reset()
+        self.last_frame = None # set in reset() and store()
 
         self.sess = sess
 
@@ -198,6 +200,7 @@ class Agent(object):
         self.reward = tf.placeholder('float', [], name='reward')
         self.action = tf.placeholder('int32', [], name='action')
 
+        input_size = tf.shape(self.inputs)[0]
         # CNN
         # first axis of inputs is time. conflate with batch in cnn.
         # batch size is always 1 with this agent.
@@ -211,11 +214,28 @@ class Agent(object):
         if FLAGS.use_rnn:
             # add batch dimension. output: batch=1, time, height, width, depth=3
             x = tf.expand_dims(x, 0)
-            self.cell = GRUCell(FLAGS.hidden_size)
-            x, states = tf.nn.dynamic_rnn(self.cell, x, dtype='float')
+            cell = GRUCell(FLAGS.hidden_size)
 
-            assert states.get_shape().as_list() == [None, self.cell.state_size]
-            assert x.get_shape().as_list() == [1, None, self.cell.output_size]
+            self.hidden_state = tf.get_variable('hidden_state',
+                shape=[BATCH_SIZE, cell.state_size],
+                initializer=tf.constant_initializer(0.0),
+                trainable=False)
+            self.reset_hidden_state = self.hidden_state.initializer
+
+            #x = tf.Print(x, [self.hidden_state], "hidden_state")
+
+            x, final_state = tf.nn.dynamic_rnn(cell, x, dtype='float',
+                                               initial_state=self.hidden_state)
+
+            assert final_state.get_shape().as_list() == [BATCH_SIZE, cell.state_size]
+            assert x.get_shape().as_list() == [BATCH_SIZE, None, cell.output_size]
+
+            # Always save the hidden state so that unless reset_hidden_state is called
+            # the rnn continues where it left off.
+            update_hidden_state = self.hidden_state.assign(final_state)
+            with tf.control_dependencies([update_hidden_state]):
+                x = tf.identity(x)
+
             x = tf.squeeze(x, squeeze_dims=[0])  # remove first axis
 
         q_values = tf.contrib.layers.fully_connected(
@@ -224,33 +244,15 @@ class Agent(object):
             weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
             name='q_values')
 
-        #print "q_values", q_values.get_shape()
-
-        def action_value_slice(index):
-            # First need to build the begin argument to tf.slice.
-            # It should be begin=[index, 0] but TF makes this
-            # WAY TOO HARD. TODO FILE A BUG
-            y = tf.expand_dims(index, 0)
-            z = tf.zeros([1], dtype='int32')
-            begin = tf.concat(0, [y, z])
-
-            s = tf.slice(q_values, begin, [1, num_actions])
-            return tf.squeeze(s)
-
-        input_size = tf.shape(self.inputs)[0]
-        last_values = action_value_slice(input_size - 1)
-
         # PREFERED WAY TO DO IT.
-        #last_index = input_size - 1
-        #last_action_value = q_values[last_index]
-
-        #print "last_value.get_shape()", last_values.get_shape().as_list()
+        #last_values = q_values[last_index]
+        last_values = _slice(q_values, input_size - 1, num_actions)
         assert last_values.get_shape().as_list() == [num_actions]
 
         last_max_value = tf.reduce_max(last_values)
         self.last_maximizing_action = tf.argmax(last_values, 0)
 
-        second_last_values = action_value_slice(input_size - 2)
+        second_last_values = _slice(q_values, input_size - 2, num_actions)
         inferred_future_reward = tf.squeeze(tf.slice(
             second_last_values, tf.expand_dims(self.action, 0), [1]))
 
@@ -296,11 +298,7 @@ class Agent(object):
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
 
-    def act(self, observation, is_training=True):
-        #print "observation mean", np.mean(observation)
-        #print "observation shape", observation.shape
-        assert observation.shape == (FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
-
+    def act(self, is_training):
         # If we are training, we randomly choose an action with probability
         # dqn_epsilon. dqn_epsilon starts at 1.0 and decays to 0.1 over
         # 1,000,000 steps. So at the beginning we only make random actions
@@ -320,16 +318,20 @@ class Agent(object):
         # Otherwise select an action that maximizes Q
         assert self.current_ep.step < FLAGS.max_episode_steps
 
+        inputs = self.last_frame[np.newaxis,:]
+        assert inputs.shape == (1, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
+
         action = self.sess.run(self.last_maximizing_action, {
             self.is_training: False,
-            self.inputs: self.observations,
+            self.inputs: inputs,
         })
 
         return action
 
     def reset(self, observation, observation_params):
-        self.observations = observation[np.newaxis, :]
+        self.last_frame = observation
         self.current_ep = Episode(observation_params)
+        self.sess.run(self.reset_hidden_state)
 
     def store(self, observation, action, reward, done, is_training,
               observation_params):
@@ -338,26 +340,19 @@ class Agent(object):
 
         done = (done or ep.step >= FLAGS.max_episode_steps)
 
-        prev_num_observations = self.observations.shape[0]
-        self.observations = np.concatenate((self.observations, observation[
-            np.newaxis, :]))
-        assert self.observations.shape[0] == 1 + prev_num_observations
+        self.last_frame = observation
 
         if done:
             ep.done()
+            self.last_frame = None
+            self.current_ep = None
 
-            if DEBUG and is_training:
-                # This is expensive!
-                np.testing.assert_allclose(ep.obvs, self.observations)
-
-            self.observations = None
             log("episode done. num_actions %d num_frames %d" %
                 (ep.num_actions, ep.num_frames))
 
             if is_training:
                 self.replay_memory.store(ep)
 
-            self.current_ep = None
 
     def build_batch(self, batch_size):
         frames = None
@@ -472,7 +467,7 @@ def main(_):
         for t in xrange(FLAGS.max_episode_steps):
             mode = 'human' if FLAGS.show_train_window else 'rgb_array'
             env.render(mode=mode)
-            action = agent.act(observation)
+            action = agent.act(is_training=True)
             observation, reward, done, _ = env.step(action)
             #print "action, reward, done", (action, reward, done)
             agent.store(observation=observation,
@@ -500,7 +495,7 @@ def validation(agent, env_val):
         total_reward = 0.0
         for t in xrange(FLAGS.max_episode_steps):
             env_val.render(mode='rgb_array')
-            action = agent.act(observation, is_training=False)
+            action = agent.act(is_training=False)
 
             debug_str += action_human_str(action) + ' '
 
@@ -533,6 +528,16 @@ def print_flags():
     for f in flags:
         print f, flags[f]
 
+def _slice(tensor, index, size):
+    # First need to build the begin argument to tf.slice.
+    # It should be begin=[index, 0] but TF makes this
+    # WAY TOO HARD. TODO FILE A BUG
+    y = tf.expand_dims(index, 0)
+    z = tf.zeros([1], dtype='int32')
+    begin = tf.concat(0, [y, z])
+
+    s = tf.slice(tensor, begin, [1, size])
+    return tf.squeeze(s, squeeze_dims=[0])
 
 if __name__ == '__main__':
     tf.app.run()
