@@ -1,4 +1,4 @@
-from skimage.io import imread # for some reason this needs to be loaded before tf
+from skimage.io import imread  # for some reason this needs to be loaded before tf
 
 import sys
 import os
@@ -22,24 +22,30 @@ MOVING_AVERAGE_DECAY = 0.9
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
 tf.app.flags.DEFINE_boolean('use_rnn', True, 'use a rnn to train the network')
-tf.app.flags.DEFINE_boolean('var_histograms', False, 'histogram summaries of every variable')
-tf.app.flags.DEFINE_boolean('grad_histograms', False, 'histogram summaries of every gradient')
-tf.app.flags.DEFINE_boolean('show_train_window', False, 'show the training window')
+tf.app.flags.DEFINE_boolean('var_histograms', False,
+                            'histogram summaries of every variable')
+tf.app.flags.DEFINE_boolean('grad_histograms', False,
+                            'histogram summaries of every gradient')
+tf.app.flags.DEFINE_boolean('show_train_window', False,
+                            'show the training window')
 tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
-tf.app.flags.DEFINE_integer('num_episodes', 100000, 'number of epsidoes to run')
+tf.app.flags.DEFINE_integer('num_episodes', 100000,
+                            'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
 tf.app.flags.DEFINE_integer('hidden_size', 64, '')
 tf.app.flags.DEFINE_integer('max_episode_steps', 10, '')
 tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
                            """Directory where to write event logs """
                            """and checkpoint.""")
-tf.app.flags.DEFINE_string('restore_resnet', '', 'path to resnet ckpt to restore from')
-
+tf.app.flags.DEFINE_string('restore_resnet', '',
+                           'path to resnet ckpt to restore from')
 
 DEBUG = False
 
+
 def log(msg):
     if DEBUG: print msg
+
 
 class Episode:
     def __init__(self, first_observation_params):
@@ -49,9 +55,9 @@ class Episode:
         self._done = False
         self._obvs_set = False
         self.img_fn = first_observation_params[0]
-        self.y_params = [ first_observation_params[1] ]
-        self.x_params = [ first_observation_params[2] ]
-        self.zoom_params = [ first_observation_params[3] ]
+        self.y_params = [first_observation_params[1]]
+        self.x_params = [first_observation_params[2]]
+        self.zoom_params = [first_observation_params[3]]
 
     @property
     def obvs(self):
@@ -67,18 +73,18 @@ class Episode:
         if len(img.shape) == 2:
             img = np.dstack([img, img, img])
 
-        self._obvs = np.zeros((self.num_frames, FLAGS.glimpse_size, FLAGS.glimpse_size, 3))
+        self._obvs = np.zeros((self.num_frames, FLAGS.glimpse_size,
+                               FLAGS.glimpse_size, 3))
         for i in range(self.num_frames):
             frame = make_observation(img=img,
-                glimpse_size=FLAGS.glimpse_size,
-                y=self.y_params[i],
-                x=self.x_params[i],
-                zoom=self.zoom_params[i])
-            self._obvs[i,:] = frame
+                                     glimpse_size=FLAGS.glimpse_size,
+                                     y=self.y_params[i],
+                                     x=self.x_params[i],
+                                     zoom=self.zoom_params[i])
+            self._obvs[i, :] = frame
 
         self._obvs_set = True
         return self._obvs
-
 
     @property
     def num_frames(self):
@@ -103,6 +109,7 @@ class Episode:
         self.zoom_params.append(observation_params[3])
         self.step += 1
 
+
 class Agent(object):
     checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
     replay_memory_path = os.path.join(FLAGS.train_dir, 'replay_memory')
@@ -111,14 +118,19 @@ class Agent(object):
         self._maybe_delete()
 
         self.replay_memory = ReplayMemory(self.replay_memory_path)
-        self.current_ep = None # set in reset()
+        self.current_ep = None  # set in reset()
 
         self.sess = sess
 
-        self.global_step = tf.get_variable('global_step', [], dtype='int32',
-            initializer=tf.constant_initializer(0), trainable=False)
-        self.val_step = tf.get_variable('val_step', [], dtype='int32',
-            initializer=tf.constant_initializer(0), trainable=False)
+        self.global_step = tf.get_variable(
+            'global_step', [],
+            dtype='int32',
+            initializer=tf.constant_initializer(0),
+            trainable=False)
+        self.val_step = tf.get_variable('val_step', [],
+                                        dtype='int32',
+                                        initializer=tf.constant_initializer(0),
+                                        trainable=False)
 
         self._build()
         self._setup_train()
@@ -127,7 +139,8 @@ class Agent(object):
         # If we aren't resuming and the train dir exists prompt to delete
         if not FLAGS.resume and os.path.isdir(FLAGS.train_dir):
             print "Starting a new training session but %s exists" % FLAGS.train_dir
-            sys.stdout.write("Do you want to delete all the files and recreate it [y] ")
+            sys.stdout.write(
+                "Do you want to delete all the files and recreate it [y] ")
             response = raw_input().lower()
             if response == "" or response == "y" or response == "yes":
                 import shutil
@@ -146,7 +159,8 @@ class Agent(object):
             if grad is not None and FLAGS.grad_histograms:
                 tf.histogram_summary(var.op.name + '/gradients', grad)
 
-        apply_gradient_op = optimizer.apply_gradients(grads, global_step=self.global_step)
+        apply_gradient_op = optimizer.apply_gradients(
+            grads, global_step=self.global_step)
 
         self.train_op = tf.group(apply_gradient_op, batchnorm_updates_op)
 
@@ -168,7 +182,8 @@ class Agent(object):
 
         if len(FLAGS.restore_resnet) > 0:
             print "restoring resnet..."
-            resnet_variables_to_restore = tf.get_collection(resnet.RESNET_VARIABLES)
+            resnet_variables_to_restore = tf.get_collection(
+                resnet.RESNET_VARIABLES)
             saver = tf.train.Saver(resnet_variables_to_restore)
             # /Users/ryan/src/tensorflow-resnet/tensorflow-resnet-pretrained-20160509/ResNet-L50.ckpt
             saver.restore(self.sess, FLAGS.restore_resnet)
@@ -177,7 +192,9 @@ class Agent(object):
     def _build(self):
         self.is_training = tf.placeholder('bool', [], name='is_training')
         self.is_terminal = tf.placeholder('bool', [], name='is_terminal')
-        self.inputs = tf.placeholder('float', [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3], name='inputs')
+        self.inputs = tf.placeholder(
+            'float', [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3],
+            name='inputs')
         self.reward = tf.placeholder('float', [], name='reward')
         self.action = tf.placeholder('int32', [], name='action')
 
@@ -198,25 +215,27 @@ class Agent(object):
             x, states = tf.nn.dynamic_rnn(self.cell, x, dtype='float')
 
             assert states.get_shape().as_list() == [None, self.cell.state_size]
-            assert x.get_shape().as_list() == [1,  None, self.cell.output_size]
-            x = tf.squeeze(x, squeeze_dims=[0]) # remove first axis
+            assert x.get_shape().as_list() == [1, None, self.cell.output_size]
+            x = tf.squeeze(x, squeeze_dims=[0])  # remove first axis
 
-        q_values = tf.contrib.layers.fully_connected(x, num_actions,
+        q_values = tf.contrib.layers.fully_connected(
+            x,
+            num_actions,
             weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
             name='q_values')
 
         #print "q_values", q_values.get_shape()
 
         def action_value_slice(index):
-          # First need to build the begin argument to tf.slice.
-          # It should be begin=[index, 0] but TF makes this
-          # WAY TOO HARD. TODO FILE A BUG
-          y = tf.expand_dims(index, 0)
-          z = tf.zeros([1], dtype='int32')
-          begin = tf.concat(0, [y, z])
+            # First need to build the begin argument to tf.slice.
+            # It should be begin=[index, 0] but TF makes this
+            # WAY TOO HARD. TODO FILE A BUG
+            y = tf.expand_dims(index, 0)
+            z = tf.zeros([1], dtype='int32')
+            begin = tf.concat(0, [y, z])
 
-          s = tf.slice(q_values, begin, [1, num_actions])
-          return tf.squeeze(s)
+            s = tf.slice(q_values, begin, [1, num_actions])
+            return tf.squeeze(s)
 
         input_size = tf.shape(self.inputs)[0]
         last_values = action_value_slice(input_size - 1)
@@ -232,10 +251,8 @@ class Agent(object):
         self.last_maximizing_action = tf.argmax(last_values, 0)
 
         second_last_values = action_value_slice(input_size - 2)
-        inferred_future_reward = tf.squeeze(
-            tf.slice(second_last_values,
-                     tf.expand_dims(self.action, 0),
-                     [1]))
+        inferred_future_reward = tf.squeeze(tf.slice(
+            second_last_values, tf.expand_dims(self.action, 0), [1]))
 
         def terminal():
             return self.reward
@@ -243,33 +260,38 @@ class Agent(object):
         def not_teriminal():
             return self.reward + DQN_GAMMA * last_max_value
 
-        expected_future_reward = tf.cond(self.is_terminal, terminal, not_teriminal)
+        expected_future_reward = tf.cond(self.is_terminal, terminal,
+                                         not_teriminal)
 
-        q_loss = tf.square(expected_future_reward - inferred_future_reward, name='q_loss')
+        q_loss = tf.square(expected_future_reward - inferred_future_reward,
+                           name='q_loss')
 
-        regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+        regularization_losses = tf.get_collection(
+            tf.GraphKeys.REGULARIZATION_LOSSES)
         self.loss = tf.add_n([q_loss] + regularization_losses, name='loss')
         tf.scalar_summary('loss', self.loss)
 
         # loss_avg
         ema = tf.train.ExponentialMovingAverage(0.999, self.global_step)
-        tf.add_to_collection(resnet.UPDATE_OPS_COLLECTION, ema.apply([self.loss]))
+        tf.add_to_collection(resnet.UPDATE_OPS_COLLECTION,
+                             ema.apply([self.loss]))
         self.loss_avg = ema.average(self.loss)
         tf.scalar_summary('loss_avg', self.loss_avg)
 
         # validation error avg
         ema = tf.train.ExponentialMovingAverage(0.9, self.val_step)
-        self.val_accuracy = tf.get_variable('val_accuracy', [], dtype='float',
-            initializer=tf.constant_initializer(0.0), trainable=False)
+        self.val_accuracy = tf.get_variable(
+            'val_accuracy', [],
+            dtype='float',
+            initializer=tf.constant_initializer(0.0),
+            trainable=False)
         self.val_accuracy_apply = tf.group(
-            self.val_step.assign_add(1),
-            ema.apply([self.val_accuracy]))
+            self.val_step.assign_add(1), ema.apply([self.val_accuracy]))
         val_accuracy_avg = ema.average(self.val_accuracy)
         tf.scalar_summary('val_accuracy_avg', val_accuracy_avg)
 
-
     def update_val_accuracy(self, accuracy):
-        self.sess.run(self.val_accuracy_apply, { self.val_accuracy: accuracy })
+        self.sess.run(self.val_accuracy_apply, {self.val_accuracy: accuracy})
 
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
@@ -299,24 +321,26 @@ class Agent(object):
         assert self.current_ep.step < FLAGS.max_episode_steps
 
         action = self.sess.run(self.last_maximizing_action, {
-           self.is_training: False,
-           self.inputs: self.observations,
+            self.is_training: False,
+            self.inputs: self.observations,
         })
 
         return action
 
     def reset(self, observation, observation_params):
-        self.observations = observation[np.newaxis,:]
+        self.observations = observation[np.newaxis, :]
         self.current_ep = Episode(observation_params)
 
-    def store(self, observation, action, reward, done, is_training, observation_params):
+    def store(self, observation, action, reward, done, is_training,
+              observation_params):
         ep = self.current_ep
         ep.store(observation_params, action, reward)
 
         done = (done or ep.step >= FLAGS.max_episode_steps)
 
         prev_num_observations = self.observations.shape[0]
-        self.observations = np.concatenate((self.observations, observation[np.newaxis,:]))
+        self.observations = np.concatenate((self.observations, observation[
+            np.newaxis, :]))
         assert self.observations.shape[0] == 1 + prev_num_observations
 
         if done:
@@ -327,7 +351,8 @@ class Agent(object):
                 np.testing.assert_allclose(ep.obvs, self.observations)
 
             self.observations = None
-            log("episode done. num_actions %d num_frames %d" % (ep.num_actions, ep.num_frames))
+            log("episode done. num_actions %d num_frames %d" %
+                (ep.num_actions, ep.num_frames))
 
             if is_training:
                 self.replay_memory.store(ep)
@@ -364,21 +389,22 @@ class Agent(object):
             log("action %d" % action)
 
             # phi_j and phi_j+1
-            obvs = random_episode.obvs[random_frame:random_frame+2]
+            obvs = random_episode.obvs[random_frame:random_frame + 2]
 
             if frames == None:
-                frames = obvs[np.newaxis,:]
+                frames = obvs[np.newaxis, :]
             else:
-                frames = np.concatenate(frames, obvs[np.newaxis,:])
+                frames = np.concatenate(frames, obvs[np.newaxis, :])
 
-        are_terminal = np.asarray(are_terminal, dtype='bool') 
-        rewards = np.asarray(rewards, dtype='float') 
-        actions = np.asarray(actions, dtype='int32') 
+        are_terminal = np.asarray(are_terminal, dtype='bool')
+        rewards = np.asarray(rewards, dtype='float')
+        actions = np.asarray(actions, dtype='int32')
 
-        assert frames.shape == (batch_size, 2, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
-        assert are_terminal.shape == (batch_size,)
-        assert rewards.shape == (batch_size,)
-        assert actions.shape == (batch_size,)
+        assert frames.shape == (batch_size, 2, FLAGS.glimpse_size,
+                                FLAGS.glimpse_size, 3)
+        assert are_terminal.shape == (batch_size, )
+        assert rewards.shape == (batch_size, )
+        assert actions.shape == (batch_size, )
 
         return frames, are_terminal, rewards, actions
 
@@ -415,22 +441,26 @@ class Agent(object):
 
         if step % 1000 == 0 and step > 0:
             print 'save checkpoint'
-            self.saver.save(self.sess, self.checkpoint_path, global_step=self.global_step)
+            self.saver.save(self.sess,
+                            self.checkpoint_path,
+                            global_step=self.global_step)
+
 
 def main(_):
     print_flags()
 
-    os.environ["IMAGENET_DIR"] = "/Users/ryan/data/imagenet-small/imagenet-small-train"
+    os.environ[
+        "IMAGENET_DIR"] = "/Users/ryan/data/imagenet-small/imagenet-small-train"
     env = gym.make('Attention%d-v0' % FLAGS.glimpse_size)
 
-    os.environ["IMAGENET_DIR"] = "/Users/ryan/data/imagenet-small/imagenet-small-val"
+    os.environ[
+        "IMAGENET_DIR"] = "/Users/ryan/data/imagenet-small/imagenet-small-val"
     env_val = gym.make('Attention%d-v0' % FLAGS.glimpse_size)
 
     #env.monitor.start('/tmp/attention', force=True)
 
-    sess = tf.Session(config=tf.ConfigProto(
-                      allow_soft_placement=True,
-                      log_device_placement=False))
+    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True,
+                                            log_device_placement=False))
 
     agent = Agent(sess)
 
@@ -445,13 +475,12 @@ def main(_):
             action = agent.act(observation)
             observation, reward, done, _ = env.step(action)
             #print "action, reward, done", (action, reward, done)
-            agent.store(
-                observation=observation,
-                observation_params=env.backdoor_observation_params(),
-                action=action,
-                reward=reward,
-                done=done,
-                is_training=True)
+            agent.store(observation=observation,
+                        observation_params=env.backdoor_observation_params(),
+                        action=action,
+                        reward=reward,
+                        done=done,
+                        is_training=True)
             agent.train()
             if done: break
 
@@ -459,6 +488,7 @@ def main(_):
             validation(agent, env_val)
 
     #env.monitor.close()
+
 
 def validation(agent, env_val):
     correct = 0
@@ -497,10 +527,12 @@ def validation(agent, env_val):
     agent.update_val_accuracy(accuracy)
     print "validation accuracy %.2f" % accuracy
 
+
 def print_flags():
     flags = FLAGS.__dict__['__flags']
     for f in flags:
         print f, flags[f]
+
 
 if __name__ == '__main__':
     tf.app.run()

@@ -3,11 +3,12 @@ from scipy.misc import imresize
 import numpy as np
 
 num_categories = 3
-num_directional_actions = 4 # up, right, down, left
-num_zoom_actions = 2 # zoom in, zoom out
+num_directional_actions = 4  # up, right, down, left
+num_zoom_actions = 2  # zoom in, zoom out
 num_actions = num_categories + num_directional_actions + num_zoom_actions
 
 DEBUG = False
+
 
 def action_human_str(action):
     action_type, category = action_str(action)
@@ -18,6 +19,7 @@ def action_human_str(action):
     elif action_type == 'zoom_out':
         return 'zo'
     return action_type[:1]
+
 
 def action_str(action):
     assert isinstance(action, int)
@@ -53,12 +55,12 @@ def make_observation(img, glimpse_size, y, x, zoom):
 
     y_min, y_max, x_min, x_max = attention_bounds(y, x, zoom)
 
-    y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel(img_shape,
-        y_min, y_max, x_min, x_max)
+    y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel(
+        img_shape, y_min, y_max, x_min, x_max)
 
     if y_min_px >= img_height or y_max_px <= 0 or \
        x_min_px >= img_width  or x_max_px <= 0:
-        return np.zeros((glimpse_size, glimpse_size, 3)) 
+        return np.zeros((glimpse_size, glimpse_size, 3))
 
     pad_top = max(0, -y_min_px)
     pad_bottom = max(0, y_max_px - img_height)
@@ -82,22 +84,22 @@ def make_observation(img, glimpse_size, y, x, zoom):
     #print padded_crop.shape
     #print "mean padded_crop", np.mean(padded_crop)
 
-    observation = imresize(padded_crop,
-                           (glimpse_size, glimpse_size))
+    observation = imresize(padded_crop, (glimpse_size, glimpse_size))
     assert observation.shape == (glimpse_size, glimpse_size, 3)
 
     if DEBUG:
         print "mean observation before scale", np.mean(observation)
 
-    observation = observation / 255.0 # scale between 0 and 1
-    observation -= 0.5 # between -0.5 and 0.5
-    observation *= 2.0 # between -1 and 1
+    observation = observation / 255.0  # scale between 0 and 1
+    observation -= 0.5  # between -0.5 and 0.5
+    observation *= 2.0  # between -1 and 1
 
     if DEBUG:
         print "mean observation after scale", np.mean(observation)
         assert -1.0 <= np.min(observation) and np.max(observation) <= 1.0
 
     return observation
+
 
 def float_to_pixel(img_shape, y1, y2, x1, x2):
     """
@@ -131,7 +133,8 @@ def get_half_attention_size(zoom):
     assert isinstance(zoom, int)
     assert 0 <= zoom and zoom <= 9
     half_attention_size = ((10 - zoom) / 10.0)
-    return half_attention_size 
+    return half_attention_size
+
 
 def attention_bounds(y, x, zoom):
     """

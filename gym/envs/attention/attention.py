@@ -11,16 +11,15 @@ import numpy as np
 from synset import *
 from common import *
 
-
 human_size = 400
 human_bottom_padding = 1
 red = [255.0, 0, 0]
 
 DEBUG = False
 
+
 def log(msg):
     if DEBUG: print msg
-
 
 
 class AttentionEnv(gym.Env):
@@ -30,7 +29,7 @@ class AttentionEnv(gym.Env):
     }
 
     def __init__(self, glimpse_size):
-        self.epochs_complete = 0 
+        self.epochs_complete = 0
         self.viewer = None
         self.num_steps = 0
         self.index = 0
@@ -53,7 +52,6 @@ class AttentionEnv(gym.Env):
         self.action_space = spaces.Discrete(num_actions)
         self.observation_space = spaces.Box(-1.0, 1.0,
                                             (glimpse_size, glimpse_size, 3))
-
 
     def backdoor_observation_params(self):
         """
@@ -100,14 +98,14 @@ class AttentionEnv(gym.Env):
         human_img = np.pad(resized, pad, 'constant', constant_values=0)
 
         # now draw the attention box
-        y_min, y_max, x_min, x_max = attention_bounds(self.y, self.x, self.zoom)
+        y_min, y_max, x_min, x_max = attention_bounds(self.y, self.x,
+                                                      self.zoom)
 
-        y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel((human_size, human_size),
-            y_min, y_max, x_min, x_max)
+        y_min_px, y_max_px, x_min_px, x_max_px = float_to_pixel(
+            (human_size, human_size), y_min, y_max, x_min, x_max)
 
         y_max_px -= 1
         x_max_px -= 1
-
 
         def in_bounds(px):
             return px >= 0 and px < human_size
@@ -123,29 +121,28 @@ class AttentionEnv(gym.Env):
 
         # top
         if in_bounds(y_min_px):
-            human_img[y_min_px,bound(x_min_px):bound(x_max_px),:] = red 
+            human_img[y_min_px, bound(x_min_px):bound(x_max_px), :] = red
 
         # bottom
         if in_bounds(y_max_px):
-            human_img[y_max_px,bound(x_min_px):bound(x_max_px),:] = red 
+            human_img[y_max_px, bound(x_min_px):bound(x_max_px), :] = red
 
         # left
         if in_bounds(x_min_px):
-            human_img[bound(y_min_px):bound(y_max_px),x_min_px,:] = red
+            human_img[bound(y_min_px):bound(y_max_px), x_min_px, :] = red
 
         # right
         if in_bounds(x_max_px):
-            human_img[bound(y_min_px):bound(y_max_px),x_max_px,:] = red
+            human_img[bound(y_min_px):bound(y_max_px), x_max_px, :] = red
 
         # Now plce the glimpse at the bottom
         glimpse_y_min = human_size + human_bottom_padding
         glimpse_y_max = glimpse_y_min + self.glimpse_size
-        glimpse_x_min = human_bottom_padding 
+        glimpse_x_min = human_bottom_padding
         glimpse_x_max = human_bottom_padding + self.glimpse_size
         #print "(glimpse_y_min, glimpse_y_max, glimpse_x_min, glimpse_x_max)", (glimpse_y_min, glimpse_y_max, glimpse_x_min, glimpse_x_max)
         human_img[glimpse_y_min:glimpse_y_max,\
                   glimpse_x_min:glimpse_x_max, :] = 255 * glimpse
-
 
         return human_img
 
@@ -195,10 +192,10 @@ class AttentionEnv(gym.Env):
 
     def _make_observation(self):
         return make_observation(img=self.img,
-            glimpse_size=self.glimpse_size, 
-            y=self.y, 
-            x=self.x,
-            zoom=self.zoom)
+                                glimpse_size=self.glimpse_size,
+                                y=self.y,
+                                x=self.x,
+                                zoom=self.zoom)
 
     def _render(self, mode="human", close=False):
         if close:
@@ -320,4 +317,3 @@ def load_data(data_dir):
         })
 
     return data
-

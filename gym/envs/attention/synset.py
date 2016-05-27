@@ -1,5 +1,3 @@
-
-
 synset = [
     "n01440764 tench, Tinca tinca",
     "n01443537 goldfish, Carassius auratus",
