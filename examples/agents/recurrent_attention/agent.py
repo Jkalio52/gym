@@ -49,6 +49,7 @@ def log(msg):
 
 class Episode:
     def __init__(self, first_observation_params):
+        self.states = []
         self.actions = []
         self.rewards = []
         self.step = 0
@@ -99,7 +100,13 @@ class Episode:
     def done(self):
         self._done = True
 
-    def store(self, observation_params, action, reward):
+    def get_state(self, i):
+        if i == 0:
+            return np.zeros((FLAGS.hidden_size))
+        else:
+            return self.states[i - 1]
+
+    def store(self, observation_params, action, reward, state):
         assert not self._done
         assert observation_params[0] == self.img_fn
         self.actions.append(action)
@@ -107,6 +114,7 @@ class Episode:
         self.y_params.append(observation_params[1])
         self.x_params.append(observation_params[2])
         self.zoom_params.append(observation_params[3])
+        self.states.append(state)
         self.step += 1
 
 
@@ -116,6 +124,8 @@ class Agent(object):
 
     def __init__(self, sess):
         self._maybe_delete()
+
+        self.cell = GRUCell(FLAGS.hidden_size)
 
         self.replay_memory = ReplayMemory(self.replay_memory_path)
         self.current_ep = None  # set in reset()
@@ -191,6 +201,7 @@ class Agent(object):
             print "done"
 
     def _build(self):
+
         self.is_training = tf.placeholder('bool', [], name='is_training')
         self.is_terminal = tf.placeholder('bool', [], name='is_terminal')
         self.frames = tf.placeholder(
@@ -198,6 +209,7 @@ class Agent(object):
             name='frames')
         self.reward = tf.placeholder('float', [], name='reward')
         self.action = tf.placeholder('int32', [], name='action')
+        self.initial_states = tf.placeholder('float', [None, self.cell.state_size], name="initial_states")
 
         input_size = tf.shape(self.frames)[0]
         # CNN
@@ -213,46 +225,17 @@ class Agent(object):
         if FLAGS.use_rnn:
             # add batch dimension. output: batch=1, time, height, width, depth=3
             x = tf.expand_dims(x, 0)
-            cell = GRUCell(FLAGS.hidden_size)
-
-            self.hidden_state = tf.get_variable(
-                'hidden_state',
-                shape=[BATCH_SIZE, cell.state_size],
-                initializer=tf.constant_initializer(0.0),
-                trainable=False)
-            self.reset_hidden_state = self.hidden_state.initializer
-
-            def get_hidden_state():
-                return self.hidden_state
-
-            zero_state = tf.zeros_like(self.hidden_state)
-
-            def get_zero_state():
-                return zero_state
-
-            initial_state = tf.cond(self.is_training, get_zero_state,
-                                    get_hidden_state)
-            if DEBUG:
-                initial_state = tf.Print(initial_state, [initial_state],
-                                         "initial_state")
 
             x, final_state = tf.nn.dynamic_rnn(
-                cell, x, dtype='float',
-                initial_state=initial_state)
+                self.cell, x, dtype='float',
+                initial_state=self.initial_states)
 
-            assert final_state.get_shape().as_list() == [BATCH_SIZE,
-                                                         cell.state_size]
+            # This is the 0th batch hidden state. Used in forward passes
+            self.state0 = _slice(final_state, 0, self.cell.state_size)
+
+            assert final_state.get_shape().as_list() == [None, self.cell.state_size]
             assert x.get_shape().as_list() == [BATCH_SIZE, None,
-                                               cell.output_size]
-
-            def update_hidden_state():
-                # Always save the hidden state so that unless reset_hidden_state is called
-                # the rnn continues where it left off.
-                with tf.control_dependencies([self.hidden_state.assign(
-                        final_state)]):
-                    return tf.identity(x)
-
-            x = tf.cond(self.is_training, lambda: x, update_hidden_state)
+                                               self.cell.output_size]
 
             x = tf.squeeze(x, squeeze_dims=[0])  # remove first axis
 
@@ -316,13 +299,29 @@ class Agent(object):
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
 
+    def reset(self, observation, observation_params):
+        self.last_frame = observation
+        self.current_ep = Episode(observation_params)
+
+        # This is the rnn state during forward passes
+        # it's updated and used in act()
+        self.last_state = np.zeros((self.cell.state_size))
+
     def act(self, is_training):
+        assert self.current_ep.step < FLAGS.max_episode_steps
+
+        i = [self.global_step, self.last_maximizing_action, self.state0]
+        step, action, self.last_state = self.sess.run(i, {
+            self.is_training: False,
+            self.frames: self.last_frame[np.newaxis, :],
+            self.initial_states: self.last_state[np.newaxis,:],
+        })
+
         # If we are training, we randomly choose an action with probability
         # dqn_epsilon. dqn_epsilon starts at 1.0 and decays to 0.1 over
         # 1,000,000 steps. So at the beginning we only make random actions
         # while towards the end we determine the action 90% of the time.
         if is_training:
-            step = self.sess.run(self.global_step)
             e = (-0.9 / 1000000) * step + 1.0
             dqn_epsilon = max(e, 0.1)
 
@@ -333,28 +332,14 @@ class Agent(object):
                 action = np.random.randint(0, num_actions)
                 return action
 
-        # Otherwise select an action that maximizes Q
-        assert self.current_ep.step < FLAGS.max_episode_steps
-
-        frames = self.last_frame[np.newaxis, :]
-        assert frames.shape == (1, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
-
-        action = self.sess.run(self.last_maximizing_action, {
-            self.is_training: False,
-            self.frames: frames,
-        })
-
         return action
-
-    def reset(self, observation, observation_params):
-        self.last_frame = observation
-        self.current_ep = Episode(observation_params)
-        self.sess.run(self.reset_hidden_state)
 
     def store(self, observation, action, reward, done, is_training,
               observation_params):
         ep = self.current_ep
-        ep.store(observation_params, action, reward)
+
+        if is_training:
+            ep.store(observation_params, action, reward, self.last_state)
 
         done = (done or ep.step >= FLAGS.max_episode_steps)
 
@@ -376,6 +361,7 @@ class Agent(object):
         are_terminal = []
         rewards = []
         actions = []
+        states = []
         for i in range(batch_size):
             ep = self.replay_memory.sample()
             assert ep._done
@@ -386,22 +372,28 @@ class Agent(object):
             log("num frames %d" % ep.num_frames)
             log("rewards " + str(ep.rewards))
             log("actions " + str(ep.actions))
-            log("j %d" % j)
+            log("random frame j %d" % j)
 
             is_terminal = (j + 1 == ep.num_frames - 1)
             reward = ep.rewards[j]
             action = ep.actions[j]
+            state = ep.get_state(j)
+
+            if DEBUG and j != 0:
+                assert np.linalg.norm(state) > 0.001, "non-initial states shouldn't be zero"
 
             are_terminal.append(is_terminal)
             rewards.append(reward)
             actions.append(action)
+            states.append(state)
 
             log("is_terminal %d" % is_terminal)
             log("reward %f" % reward)
             log("action %d" % action)
+            log("state " + str(state))
 
             # all frames up to phi_j and phi_j+1
-            obvs = ep.obvs[0:j + 2]
+            obvs = ep.obvs[j:j + 2]
 
             if frames == None:
                 frames = obvs[np.newaxis, :]
@@ -416,7 +408,7 @@ class Agent(object):
         assert rewards.shape == (batch_size, )
         assert actions.shape == (batch_size, )
 
-        return frames, are_terminal, rewards, actions
+        return frames, are_terminal, rewards, actions, states
 
     def train(self):
         step = self.sess.run(self.global_step)
@@ -425,12 +417,15 @@ class Agent(object):
 
         if self.replay_memory.count() < 1: return
 
-        frames, are_terminal, rewards, actions = self.build_batch(BATCH_SIZE)
+        frames, are_terminal, rewards, actions, states = self.build_batch(BATCH_SIZE)
 
         i = [self.train_op, self.loss_avg]
 
         if write_summary:
             i.append(self.summary_op)
+
+        initial_state = states[0]
+        initial_states = initial_state[np.newaxis,:]
 
         o = self.sess.run(i, {
             self.is_training: True,
@@ -438,6 +433,7 @@ class Agent(object):
             self.frames: frames[0],
             self.reward: rewards[0],
             self.action: actions[0],
+            self.initial_states: initial_states,
         })
 
         loss_value = o[1]
