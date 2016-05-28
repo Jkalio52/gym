@@ -23,7 +23,6 @@ BATCH_SIZE = 1  # TODO allow training on batches
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
-tf.app.flags.DEFINE_boolean('use_rnn', True, 'use a rnn to train the network')
 tf.app.flags.DEFINE_boolean('var_histograms', False,
                             'histogram summaries of every variable')
 tf.app.flags.DEFINE_boolean('grad_histograms', False,
@@ -35,6 +34,7 @@ tf.app.flags.DEFINE_integer('num_episodes', 100000,
                             'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
 tf.app.flags.DEFINE_integer('hidden_size', 64, '')
+tf.app.flags.DEFINE_integer('batch_size', 16, '')
 tf.app.flags.DEFINE_integer('max_episode_steps', 10, '')
 tf.app.flags.DEFINE_string('train_dir', '/tmp/agent_train',
                            """Directory where to write event logs """
@@ -200,77 +200,77 @@ class Agent(object):
             saver.restore(self.sess, FLAGS.restore_resnet)
             print "done"
 
-    def _build(self):
-
-        self.is_training = tf.placeholder('bool', [], name='is_training')
-        self.is_terminal = tf.placeholder('bool', [], name='is_terminal')
-        self.frames = tf.placeholder(
-            'float', [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3],
-            name='frames')
-        self.reward = tf.placeholder('float', [], name='reward')
-        self.action = tf.placeholder('int32', [], name='action')
-        self.initial_states = tf.placeholder('float', [None, self.cell.state_size], name="initial_states")
-
-        input_size = tf.shape(self.frames)[0]
-        # CNN
-        # first axis of frames is time. conflate with batch in cnn.
-        # batch size is always 1 with this agent.
-        x = self.frames
-        x = resnet.inference_small(x,
-                                   is_training=self.is_training,
-                                   num_classes=None,
-                                   use_bias=True,
-                                   num_blocks=1)
-
-        if FLAGS.use_rnn:
-            # add batch dimension. output: batch=1, time, height, width, depth=3
-            x = tf.expand_dims(x, 0)
-
-            x, final_state = tf.nn.dynamic_rnn(
-                self.cell, x, dtype='float',
-                initial_state=self.initial_states)
-
-            # This is the 0th batch hidden state. Used in forward passes
-            self.state0 = _slice(final_state, 0, self.cell.state_size)
-
-            assert final_state.get_shape().as_list() == [None, self.cell.state_size]
-            assert x.get_shape().as_list() == [BATCH_SIZE, None,
-                                               self.cell.output_size]
-
-            x = tf.squeeze(x, squeeze_dims=[0])  # remove first axis
-
-        q_values = tf.contrib.layers.fully_connected(
-            x,
-            num_actions,
+    def q_values(self, x):
+        return tf.contrib.layers.fully_connected(x, num_actions,
             weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
             name='q_values')
 
-        # PREFERED WAY TO DO IT.
-        #last_values = q_values[last_index]
-        last_values = _slice(q_values, input_size - 1, num_actions)
-        assert last_values.get_shape().as_list() == [num_actions]
+    def cnn(self, x, is_training):
+        return resnet.inference_small(x,
+                                      is_training=is_training,
+                                      num_classes=None,
+                                      use_bias=True,
+                                      num_blocks=1)
 
-        last_max_value = tf.reduce_max(last_values)
-        self.last_maximizing_action = tf.argmax(last_values, 0)
 
-        second_last_values = _slice(q_values, input_size - 2, num_actions)
-        inferred_future_reward = tf.squeeze(tf.slice(
-            second_last_values, tf.expand_dims(self.action, 0), [1]))
+    def _build(self):
+        frame_shape = [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3]
 
-        def terminal():
-            return self.reward
+        self.frames0 = tf.placeholder('float', frame_shape, name='frames0')
+        self.frames1 = tf.placeholder('float', frame_shape, name='frames1')
 
-        def not_teriminal():
-            return self.reward + DQN_GAMMA * last_max_value
+        self.is_training = tf.placeholder('bool', [], name='is_training')
+        self.are_terminal = tf.placeholder('bool', [None], name='are_terminal')
+        self.rewards = tf.placeholder('float', [None], name='rewards')
+        self.actions = tf.placeholder('int32', [None], name='actions')
+        self.initial_states = tf.placeholder('float', [None, self.cell.state_size], name="initial_states")
 
-        expected_future_reward = tf.cond(self.is_terminal, terminal,
-                                         not_teriminal)
+        with tf.variable_scope('cnn') as scope:
+            x0 = self.cnn(self.frames0, self.is_training)
+            scope.reuse_variables()
+            x1 = self.cnn(self.frames1, self.is_training)
 
-        q_loss = tf.square(expected_future_reward - inferred_future_reward,
-                           name='q_loss')
+        with tf.variable_scope('rnn') as scope:
+            out0, states0 = self.cell(x0, self.initial_states)
+            scope.reuse_variables()
+            out1, states1 = self.cell(x1, states0)
+
+        self.states0 = states0 # needed for act()
+
+        # states shape [batch_size, self.cell.state_size]
+        # x shape [batch_size, cell.output_size]
+
+        with tf.variable_scope('fc') as scope:
+            q_values0 = self.q_values(out0)
+            scope.reuse_variables()
+            q_values1 = self.q_values(out1)
+
+        max_q_val0 = tf.reduce_max(q_values0, reduction_indices=[1])
+        max_q_val1 = tf.reduce_max(q_values1, reduction_indices=[1])
+
+        max_action0 = tf.argmax(q_values0, 1)
+        max_action1 = tf.argmax(q_values1, 1)
+
+        self.max_action0 = max_action0 # needed for act()
+
+        # y_j in the paper is expected_rewards
+        terminal = self.rewards
+        non_terminal = self.rewards + DQN_GAMMA * max_q_val1
+        expected_rewards = tf.select(self.are_terminal, terminal, non_terminal)
+
+        # basically we want q_values0[actions]
+        # but tensorflow makes this painfully difficult
+        # gather: output[i, :] = params[indices[i], :]
+        q_values0_t = tf.transpose(q_values0)
+        w = tf.gather(params=q_values0_t, indices=self.actions)
+        inferred_rewards = tf.diag_part(w)
+
+        q_loss = tf.square(expected_rewards - inferred_rewards, name='q_loss')
+        q_loss = tf.reduce_mean(q_loss) # average over batches
 
         regularization_losses = tf.get_collection(
             tf.GraphKeys.REGULARIZATION_LOSSES)
+
         self.loss = tf.add_n([q_loss] + regularization_losses, name='loss')
         tf.scalar_summary('loss', self.loss)
 
@@ -312,12 +312,18 @@ class Agent(object):
     def act(self, is_training):
         assert self.current_ep.step < FLAGS.max_episode_steps
 
-        i = [self.global_step, self.last_maximizing_action, self.state0]
-        step, action, self.last_state = self.sess.run(i, {
+        i = [self.global_step, self.max_action0, self.states0]
+        step, max_action0, states0 = self.sess.run(i, {
             self.is_training: False,
-            self.frames: self.last_frame[np.newaxis, :],
+            self.frames0: self.last_frame[np.newaxis, :],
             self.initial_states: self.last_state[np.newaxis,:],
         })
+
+        assert max_action0.shape[0] == 1
+        action = max_action0[0]
+
+        assert states0.shape[0] == 1
+        self.last_state = states0[0]
 
         # If we are training, we randomly choose an action with probability
         # dqn_epsilon. dqn_epsilon starts at 1.0 and decays to 0.1 over
@@ -359,7 +365,8 @@ class Agent(object):
                 self.replay_memory.store(ep)
 
     def build_batch(self, batch_size):
-        frames = None
+        frames0 = None
+        frames1 = None
         are_terminal = []
         rewards = []
         actions = []
@@ -395,12 +402,17 @@ class Agent(object):
             log("state " + str(state))
 
             # all frames up to phi_j and phi_j+1
-            obvs = ep.obvs[j:j + 2]
+            obvs = ep.obvs[j:j + 2, :]
 
-            if frames == None:
-                frames = obvs[np.newaxis, :]
+            f0 = obvs[np.newaxis, 0, :]
+            f1 = obvs[np.newaxis, 1, :]
+
+            if i == 0:
+                frames0 = f0
+                frames1 = f1
             else:
-                frames = np.concatenate(frames, obvs[np.newaxis, :])
+                frames0 = np.concatenate((frames0, f0))
+                frames1 = np.concatenate((frames1, f1))
 
         are_terminal = np.asarray(are_terminal, dtype='bool')
         rewards = np.asarray(rewards, dtype='float')
@@ -409,33 +421,34 @@ class Agent(object):
         assert are_terminal.shape == (batch_size, )
         assert rewards.shape == (batch_size, )
         assert actions.shape == (batch_size, )
+        assert frames0.shape == (batch_size, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
+        assert frames1.shape == (batch_size, FLAGS.glimpse_size, FLAGS.glimpse_size, 3)
 
-        return frames, are_terminal, rewards, actions, states
+        return frames0, frames1, are_terminal, rewards, actions, states
 
     def train(self):
         step = self.sess.run(self.global_step)
         write_summary = (step % 10 == 0 and step > 1)
+
+        # Wait until we have some replay_memory built up before we start
+        if self.replay_memory.count() < 2 * FLAGS.batch_size: return
+
         # Sample random minibatch of transititons
-
-        if self.replay_memory.count() < 1: return
-
-        frames, are_terminal, rewards, actions, states = self.build_batch(BATCH_SIZE)
+        frames0, frames1, are_terminal, rewards, actions, states = self.build_batch(FLAGS.batch_size)
 
         i = [self.train_op, self.loss_avg]
 
         if write_summary:
             i.append(self.summary_op)
 
-        initial_state = states[0]
-        initial_states = initial_state[np.newaxis,:]
-
         o = self.sess.run(i, {
             self.is_training: True,
-            self.is_terminal: are_terminal[0],
-            self.frames: frames[0],
-            self.reward: rewards[0],
-            self.action: actions[0],
-            self.initial_states: initial_states,
+            self.frames0: frames0,
+            self.frames1: frames1,
+            self.are_terminal: are_terminal,
+            self.rewards: rewards,
+            self.actions: actions,
+            self.initial_states: states,
         })
 
         loss_value = o[1]
