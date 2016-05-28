@@ -283,18 +283,20 @@ class Agent(object):
 
         # validation error avg
         ema = tf.train.ExponentialMovingAverage(0.9, self.val_step)
-        self.val_accuracy = tf.get_variable(
-            'val_accuracy', [],
-            dtype='float',
-            initializer=tf.constant_initializer(0.0),
-            trainable=False)
-        self.val_accuracy_apply = tf.group(
-            self.val_step.assign_add(1), ema.apply([self.val_accuracy]))
-        val_accuracy_avg = ema.average(self.val_accuracy)
-        tf.scalar_summary('val_accuracy_avg', val_accuracy_avg)
+        self.val_accuracy = tf.placeholder('float', [], name='val_accuracy')
+        self.val_steps = tf.placeholder('float', [], name='val_steps')
+        self.val_stats_apply = tf.group(
+            self.val_step.assign_add(1),
+            ema.apply([self.val_accuracy, self.val_steps]))
 
-    def update_val_accuracy(self, accuracy):
-        self.sess.run(self.val_accuracy_apply, {self.val_accuracy: accuracy})
+        tf.scalar_summary('val_accuracy_avg', ema.average(self.val_accuracy))
+        tf.scalar_summary('val_steps_avg', ema.average(self.val_steps))
+
+    def update_val_stats(self, accuracy, mean_steps):
+        self.sess.run(self.val_stats_apply, {
+            self.val_accuracy: accuracy,
+            self.val_steps: mean_steps,
+        })
 
     def _build_action(self, x, name, num_possible_actions, labels):
         return prob, loss
@@ -499,6 +501,7 @@ def main(_):
 def validation(agent, env_val):
     correct = 0
     total = 10
+    lengths = []
     for _ in xrange(0, total):
         observation = env_val.reset()
         agent.reset(observation, env_val.backdoor_observation_params())
@@ -519,9 +522,11 @@ def validation(agent, env_val):
                 done=done,
                 is_training=False)
             total_reward += reward
+
             if reward != 0:
                 debug_str += "%.1f " % reward
             if done: break
+        lengths.append(t + 1)
 
         if reward > 0:
             correct += 1
@@ -530,7 +535,7 @@ def validation(agent, env_val):
         print debug_str
 
     accuracy = float(correct) / total
-    agent.update_val_accuracy(accuracy)
+    agent.update_val_stats(accuracy, np.mean(lengths))
     print "validation accuracy %.2f" % accuracy
 
 
