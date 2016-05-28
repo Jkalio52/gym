@@ -29,7 +29,7 @@ tf.app.flags.DEFINE_boolean('grad_histograms', False,
                             'histogram summaries of every gradient')
 tf.app.flags.DEFINE_boolean('show_train_window', False,
                             'show the training window')
-tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
+tf.app.flags.DEFINE_float('learning_rate', 0.1, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000,
                             'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
@@ -209,7 +209,7 @@ class Agent(object):
         return resnet.inference_small(x,
                                       is_training=is_training,
                                       num_classes=None,
-                                      use_bias=True,
+                                      use_bias=False,
                                       num_blocks=1)
 
 
