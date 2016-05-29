@@ -13,7 +13,6 @@ import random
 import resnet as resnet
 from replay_memory import ReplayMemory
 
-from tensorflow.models.rnn.rnn_cell import GRUCell
 from gym.envs.attention.common import *
 
 DEBUG = False
@@ -29,7 +28,7 @@ tf.app.flags.DEFINE_boolean('grad_histograms', False,
                             'histogram summaries of every gradient')
 tf.app.flags.DEFINE_boolean('show_train_window', False,
                             'show the training window')
-tf.app.flags.DEFINE_float('learning_rate', 0.1, 'Initial learning rate.')
+tf.app.flags.DEFINE_float('learning_rate', 0.01, 'Initial learning rate.')
 tf.app.flags.DEFINE_integer('num_episodes', 100000,
                             'number of epsidoes to run')
 tf.app.flags.DEFINE_integer('glimpse_size', 32, '32 or 64')
@@ -125,7 +124,7 @@ class Agent(object):
     def __init__(self, sess):
         self._maybe_delete()
 
-        self.cell = GRUCell(FLAGS.hidden_size)
+        self.cell = tf.nn.rnn_cell.GRUCell(FLAGS.hidden_size)
 
         self.replay_memory = ReplayMemory(self.replay_memory_path)
         self.current_ep = None  # set in reset()
@@ -200,10 +199,9 @@ class Agent(object):
             saver.restore(self.sess, FLAGS.restore_resnet)
             print "done"
 
-    def q_values(self, x):
+    def q_values(self, x, scope):
         return tf.contrib.layers.fully_connected(x, num_actions,
-            weight_regularizer=tf.contrib.layers.l2_regularizer(0.00004),
-            name='q_values')
+            weights_regularizer=tf.contrib.layers.l2_regularizer(0.00004), scope=scope)
 
     def cnn(self, x, is_training):
         return resnet.inference_small(x,
@@ -212,18 +210,17 @@ class Agent(object):
                                       use_bias=False,
                                       num_blocks=1)
 
-
     def _build(self):
         frame_shape = [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3]
 
         self.frames0 = tf.placeholder('float', frame_shape, name='frames0')
         self.frames1 = tf.placeholder('float', frame_shape, name='frames1')
-
+        self.initial_states = tf.placeholder('float', [None, self.cell.state_size], name="initial_states")
         self.is_training = tf.placeholder('bool', [], name='is_training')
+        # The following are only used for training phase
         self.are_terminal = tf.placeholder('bool', [None], name='are_terminal')
         self.rewards = tf.placeholder('float', [None], name='rewards')
         self.actions = tf.placeholder('int32', [None], name='actions')
-        self.initial_states = tf.placeholder('float', [None, self.cell.state_size], name="initial_states")
 
         with tf.variable_scope('cnn') as scope:
             x0 = self.cnn(self.frames0, self.is_training)
@@ -241,9 +238,9 @@ class Agent(object):
         # x shape [batch_size, cell.output_size]
 
         with tf.variable_scope('fc') as scope:
-            q_values0 = self.q_values(out0)
+            q_values0 = self.q_values(out0, scope)
             scope.reuse_variables()
-            q_values1 = self.q_values(out1)
+            q_values1 = self.q_values(out1, scope)
 
         max_q_val0 = tf.reduce_max(q_values0, reduction_indices=[1])
         max_q_val1 = tf.reduce_max(q_values1, reduction_indices=[1])
