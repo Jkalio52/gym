@@ -22,6 +22,8 @@ MOVING_AVERAGE_DECAY = 0.9
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
+tf.app.flags.DEFINE_boolean('use_bias', False,
+                            'use biases instead of batch norm')
 tf.app.flags.DEFINE_boolean('var_histograms', False,
                             'histogram summaries of every variable')
 tf.app.flags.DEFINE_boolean('grad_histograms', False,
@@ -199,31 +201,30 @@ class Agent(object):
             saver.restore(self.sess, FLAGS.restore_resnet)
             print "done"
 
-    def q_values(self, x, scope):
-        return tf.contrib.layers.fully_connected(x, num_actions,
-            weights_regularizer=tf.contrib.layers.l2_regularizer(0.00004), scope=scope)
+    def q_values(self, x, c):
+        c['fc_units_out'] = num_actions
+        return resnet.fc(x, c)
 
-    def cnn(self, frames, states, is_training):
+    def cnn(self, frames, states, c):
         # frames are a batch of RGB images
         # states are previous hidden states which we want to integrate into
         # the image so that the CNN has some idea of what state it was in before.
-        c = resnet.Config()
-        c['conv_filters_out'] = self.cell.state_size
-        c['ksize'] = 3
-        c['stride'] = 1
-        c['use_bias'] = True
-        c['is_training'] = is_training
-        x = resnet.conv(frames, c)
-        x = batch_add_images(x, states)
+        c['num_classes'] = None
+        c['num_blocks'] = 1
+        c['fc_units_out'] = c['conv_filters_out'] = 3
 
+        with tf.variable_scope('state_fc'):
+            states = resnet.fc(states, c)
+
+        #c['ksize'] = 3
+        #c['stride'] = 1
+        #x = resnet.conv(frames, c)
+
+        x = batch_add_images(frames, states)
         x = resnet.bn(x, c)
         x = tf.nn.relu(x)
 
-        return resnet.inference_small(x,
-                                      is_training=is_training,
-                                      num_classes=None,
-                                      use_bias=True,
-                                      num_blocks=1)
+        return resnet.inference_small_config(x, c)
 
     def _build(self):
         frame_shape = [None, FLAGS.glimpse_size, FLAGS.glimpse_size, 3]
@@ -237,15 +238,19 @@ class Agent(object):
         self.rewards = tf.placeholder('float', [None], name='rewards')
         self.actions = tf.placeholder('int32', [None], name='actions')
 
+        c = resnet.Config()
+        #c['use_bias']  this is set with the flags. default False
+        c['is_training'] = self.is_training
+
         with tf.variable_scope('cnn') as scope:
-            x0 = self.cnn(self.frames0, self.initial_states, self.is_training)
+            x0 = self.cnn(self.frames0, self.initial_states, c)
 
         with tf.variable_scope('rnn') as scope:
             out0, states0 = self.cell(x0, self.initial_states)
             self.states0 = states0 # needed for act()
 
         with tf.variable_scope('cnn', reuse=True) as scope:
-            x1 = self.cnn(self.frames0, states0, self.is_training)
+            x1 = self.cnn(self.frames0, states0, c)
 
         with tf.variable_scope('rnn', reuse=True) as scope:
             out1, states1 = self.cell(x1, states0)
@@ -254,10 +259,10 @@ class Agent(object):
         # states shape [batch_size, self.cell.state_size]
         # x shape [batch_size, cell.output_size]
 
-        with tf.variable_scope('fc') as scope:
-            q_values0 = self.q_values(out0, scope)
+        with tf.variable_scope('q_values_fc') as scope:
+            q_values0 = self.q_values(out0, c)
             scope.reuse_variables()
-            q_values1 = self.q_values(out1, scope)
+            q_values1 = self.q_values(out1, c)
 
         max_q_val0 = tf.reduce_max(q_values0, reduction_indices=[1])
         max_q_val1 = tf.reduce_max(q_values1, reduction_indices=[1])
