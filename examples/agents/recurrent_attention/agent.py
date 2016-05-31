@@ -12,13 +12,13 @@ import random
 
 import resnet as resnet
 from replay_memory import ReplayMemory
+from misc import *
 
 from gym.envs.attention.common import *
 
 DEBUG = False
 DQN_GAMMA = 0.99
 MOVING_AVERAGE_DECAY = 0.9
-BATCH_SIZE = 1  # TODO allow training on batches
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_boolean('resume', False, 'resume from latest saved state')
@@ -203,11 +203,26 @@ class Agent(object):
         return tf.contrib.layers.fully_connected(x, num_actions,
             weights_regularizer=tf.contrib.layers.l2_regularizer(0.00004), scope=scope)
 
-    def cnn(self, x, is_training):
+    def cnn(self, frames, states, is_training):
+        # frames are a batch of RGB images
+        # states are previous hidden states which we want to integrate into
+        # the image so that the CNN has some idea of what state it was in before.
+        c = resnet.Config()
+        c['conv_filters_out'] = self.cell.state_size
+        c['ksize'] = 3
+        c['stride'] = 1
+        c['use_bias'] = True
+        c['is_training'] = is_training
+        x = resnet.conv(frames, c)
+        x = batch_add_images(x, states)
+
+        x = resnet.bn(x, c)
+        x = tf.nn.relu(x)
+
         return resnet.inference_small(x,
                                       is_training=is_training,
                                       num_classes=None,
-                                      use_bias=False,
+                                      use_bias=True,
                                       num_blocks=1)
 
     def _build(self):
@@ -223,16 +238,18 @@ class Agent(object):
         self.actions = tf.placeholder('int32', [None], name='actions')
 
         with tf.variable_scope('cnn') as scope:
-            x0 = self.cnn(self.frames0, self.is_training)
-            scope.reuse_variables()
-            x1 = self.cnn(self.frames1, self.is_training)
+            x0 = self.cnn(self.frames0, self.initial_states, self.is_training)
 
         with tf.variable_scope('rnn') as scope:
             out0, states0 = self.cell(x0, self.initial_states)
-            scope.reuse_variables()
+            self.states0 = states0 # needed for act()
+
+        with tf.variable_scope('cnn', reuse=True) as scope:
+            x1 = self.cnn(self.frames0, states0, self.is_training)
+
+        with tf.variable_scope('rnn', reuse=True) as scope:
             out1, states1 = self.cell(x1, states0)
 
-        self.states0 = states0 # needed for act()
 
         # states shape [batch_size, self.cell.state_size]
         # x shape [batch_size, cell.output_size]
@@ -547,25 +564,6 @@ def validation(agent, env_val):
     accuracy = float(correct) / total
     agent.update_val_stats(accuracy, np.mean(lengths))
     print "validation accuracy %.2f" % accuracy
-
-
-def print_flags():
-    flags = FLAGS.__dict__['__flags']
-    for f in flags:
-        print f, flags[f]
-
-
-def _slice(tensor, index, size):
-    # First need to build the begin argument to tf.slice.
-    # It should be begin=[index, 0] but TF makes this
-    # WAY TOO HARD. TODO FILE A BUG
-    y = tf.expand_dims(index, 0)
-    z = tf.zeros([1], dtype='int32')
-    begin = tf.concat(0, [y, z])
-
-    s = tf.slice(tensor, begin, [1, size])
-    return tf.squeeze(s, squeeze_dims=[0])
-
 
 if __name__ == '__main__':
     tf.app.run()
